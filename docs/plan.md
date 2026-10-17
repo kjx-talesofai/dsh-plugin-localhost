@@ -177,3 +177,9 @@ URL 单独占一行而不是塞在 meta 里，是因为它才是"这东西在哪
 `uiWorkspace` 之前是用 `serviceOf(ctx, ...)`（也就是 `ctx.get`）拿的。**客户端 ctx 是白名单代理**，没在 `inject` 里声明的服务拿不到——返回 undefined，于是点击静默无效果。
 
 palette 里写的是 `const inject = ['slots','locale','sessions','uiWorkspace', ...]`，直接 `ctx.uiWorkspace.openSession(id)`。这里照做：声明 `uiWorkspace`，并且加了一条测试真的点那下按钮、断言 `openSession` 收到正确的 session id。
+
+## 14. 导航行也要能回答"有东西在跑吗"（v0.2.2）
+
+侧边栏那一行是常驻的，面板不是。所以"有没有服务在跑"不能只回答在面板里——那需要先点进去。Tailscale 那行已经用右下角小圆点回答"在不在线"，这里照抄同一个位置和尺寸（`right:-4 bottom:-3`，8px，`state-success-primary`）。
+
+代价是**第二个轮询**：图标 10s 一次，面板 2.5s 一次。都用同一个 `fetchServices()`。没有做跨组件订阅——一个导航点晚 10 秒亮起来不值得一套 store。

@@ -760,6 +760,61 @@ describe('client: bundle', () => {
   })
 })
 
+/** Mount the nav-row icon on its own, with a fetch stub behind it. */
+async function mountIcon(services) {
+  const { loaded, hooks } = loadClient()
+  const registered = []
+  const ctx = {
+    locale: makeLocale(),
+    effect: (fn) => fn(),
+    slots: {
+      inject: (_name, run) => run(),
+      register: (options, component) => {
+        registered.push({ options, component })
+        return () => {}
+      },
+    },
+  }
+  loaded.exports.apply(ctx)
+  const nav = registered.find((entry) => entry.options.name === 'sidebar.panellist')
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ services }) })
+
+  hooks.reset()
+  hooks.clearEffects()
+  nav.component({ size: 20, active: false })
+  for (const effect of hooks.effects()) effect()
+  await new Promise((done) => setTimeout(done, 0))
+
+  hooks.reset()
+  return nav.component({ size: 20, active: false })
+}
+
+describe('client: nav row', () => {
+  const savedFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = savedFetch
+  })
+
+  it('shows a dot while something is running', async () => {
+    const tree = await mountIcon([
+      { id: 'a', name: 'radio', kind: 'spawned', dir: '/tmp/a', cmd: 'serve', port: 8840, status: 'running', url: 'http://127.0.0.1:8840/', sessionId: '' },
+    ])
+    assert.equal(countClass(tree, 'lh-navdot'), 1)
+  })
+
+  it('shows nothing when every service is stopped', async () => {
+    const tree = await mountIcon([
+      { id: 'a', name: 'radio', kind: 'spawned', dir: '/tmp/a', cmd: 'serve', port: 8840, status: 'stopped', url: 'http://127.0.0.1:8840/', sessionId: '' },
+    ])
+    assert.equal(countClass(tree, 'lh-navdot'), 0)
+  })
+
+  it('does not put the dot up when the registry is empty', async () => {
+    const tree = await mountIcon([])
+    assert.equal(countClass(tree, 'lh-navdot'), 0)
+  })
+})
+
 describe('client: panel', () => {
   const savedFetch = globalThis.fetch
   afterEach(() => {

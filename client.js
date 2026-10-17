@@ -45,6 +45,7 @@ window.__ModuleLoader__.load({
     }
 
     const POLL_MS = 2500
+    const NAV_POLL_MS = 10000
     const LOG_POLL_MS = 1200
 
     const zh = {
@@ -151,8 +152,17 @@ window.__ModuleLoader__.load({
 .lh-err{color:var(--dsw-alias-state-error-primary);font-size:12px;padding:0 20px 8px}
 .lh-empty{padding:56px 24px;text-align:center;color:var(--dsw-alias-label-secondary);line-height:1.9}
 .lh-empty b{display:block;color:var(--dsw-alias-label-primary);font-weight:500;margin-bottom:4px;font-size:13px}
+.lh-navdot{position:absolute;right:-4px;bottom:-3px;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
 .lh-foot{padding:10px 20px 14px;color:var(--dsw-alias-label-tertiary);font-size:11.5px;border-top:1px solid var(--dsw-alias-border-l4)}
 `
+
+    /** The registry, as the panel and the nav dot both read it. */
+    async function fetchServices() {
+      const response = await fetch(API.list, { headers: { accept: 'application/json' } })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const body = await response.json()
+      return Array.isArray(body?.services) ? body.services : []
+    }
 
     /** Render the panel body. */
     function Panel(props) {
@@ -167,11 +177,9 @@ window.__ModuleLoader__.load({
 
       const refresh = useCallback(async () => {
         try {
-          const response = await fetch(API.list, { headers: { accept: 'application/json' } })
-          if (!response.ok) throw new Error(`HTTP ${response.status}`)
-          const body = await response.json()
+          const next = await fetchServices()
           if (!alive.current) return
-          setServices(Array.isArray(body?.services) ? body.services : [])
+          setServices(next)
           setError(null)
         } catch (failure) {
           if (alive.current) setError(String(failure?.message ?? failure))
@@ -422,9 +430,42 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** The nav row: a stack of little panels, one of them lit. */
+    /**
+     * The nav row: a stack of little panels, one of them lit, plus a dot while
+     * anything is running. The row is mounted whether or not the panel is open,
+     * so it polls on its own slower cadence rather than sharing the panel's.
+     */
     function SidebarIcon(props) {
       const size = props?.size ?? 20
+      const [running, setRunning] = useState(0)
+      useEffect(() => {
+        let alive = true
+        const load = async () => {
+          try {
+            const services = await fetchServices()
+            if (alive) setRunning(services.filter((service) => service.status === 'running').length)
+          } catch {}
+        }
+        load()
+        const timer = setInterval(load, NAV_POLL_MS)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [])
+      return h(
+        'span',
+        { style: { position: 'relative', display: 'inline-flex', alignItems: 'center' } },
+        h(Icon, { size }),
+        running > 0
+          ? h('span', { className: 'lh-navdot', 'aria-label': String(running) })
+          : null,
+      )
+    }
+
+    /** The panel glyph: a stack of panels, which is what the row lists. */
+    function Icon(props) {
+      const size = props.size
       return h(
         'svg',
         {
