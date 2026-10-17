@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines say ">=22"; 24 is included so a future runtime shift shows up here
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No install step by design. The Host half imports only Node builtins and
+      # the Client half is evaluated as a script, so a bare checkout is enough.
+      - run: npm test
+
+      - name: The tarball ships only runtime files
+        run: |
+          npm pack --dry-run > "$RUNNER_TEMP/pack.txt" 2>&1
+          cat "$RUNNER_TEMP/pack.txt"
+          for expected in client.js index.js cordis.patch.yml assets/icon.svg locale/en.json locale/zh.json README.md LICENSE; do
+            grep -qF "$expected" "$RUNNER_TEMP/pack.txt" || { echo "::error::missing from the tarball: $expected"; exit 1; }
+          done
+          for dev_only in 'tests/' 'docs/' 'plan.md'; do
+            if grep -qF "$dev_only" "$RUNNER_TEMP/pack.txt"; then
+              echo "::error::dev-only file in the tarball: $dev_only"
+              exit 1
+            fi
+          done

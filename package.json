@@ -1,0 +1,69 @@
+{
+  "name": "dsh-plugin-localhost",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A panel for what the agent is serving on localhost: port, directory, session, and one switch to stop it.",
+  "license": "MIT",
+  "author": "Jiaxin Kou <https://hypersampling.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kjx-talesofai/dsh-plugin-localhost.git"
+  },
+  "homepage": "https://github.com/kjx-talesofai/dsh-plugin-localhost",
+  "bugs": "https://github.com/kjx-talesofai/dsh-plugin-localhost/issues",
+  "icon": "./assets/icon.svg",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./client": {
+      "default": "./client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "assets/icon.svg",
+    "locale/*.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "dev-server",
+    "spa",
+    "localhost",
+    "port"
+  ],
+  "scripts": {
+    "test": "node --test tests/plugin.test.mjs"
+  }
+}

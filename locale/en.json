@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Localhost",
+    "description": "The servers and static pages an agent started on this machine: port, directory, registering session, and one switch to stop each."
+  }
+}

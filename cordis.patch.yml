@@ -1,0 +1,13 @@
+# dsh-plugin-localhost — bundle layer.
+#
+# One row mounts the package. The row id is load-bearing twice over: it names the
+# settings namespace, and the browser half reaches this package's own routes
+# under `/api/localhost.*`. Keep it in step with `ROW_ID` in client.js.
+#
+# The package is dual-face (it also declares `dsh.client`), so the same row gives
+# the browser half a home. No config: the service registry is data, not a
+# preference — it lives in `~/.dsh/localhost/services.json`, written by the
+# Host half. Preferences that belong to the user belong in a config schema; a
+# list of machines' ports does not.
+- id: localhost
+  name: dsh-plugin-localhost
