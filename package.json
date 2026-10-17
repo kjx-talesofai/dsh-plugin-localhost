@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-localhost",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "type": "module",
   "description": "A panel for what the agent is serving on localhost: port, directory, session, and one switch to stop it.",
   "license": "MIT",

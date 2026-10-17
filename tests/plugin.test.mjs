@@ -28,6 +28,24 @@ import { createContext, runInContext } from 'node:vm'
 const home = mkdtempSync(join(tmpdir(), 'dsh-localhost-'))
 process.env.DSH_HOME = home
 
+// A fake `tailscale serve status --json`, so the refresh path runs for real
+// (execFile included) instead of being mocked out of existence. Written before
+// the import: the registry path and this fixture both live under the temp home.
+const FAKE_TAILSCALE = join(home, 'fake-tailscale')
+// Publishes whatever port the test names, so the mapping under test never depends
+// on which port is free on this machine.
+writeFileSync(
+  FAKE_TAILSCALE,
+  `#!/bin/sh
+cat <<JSON
+{"TCP":{"8443":{"HTTPS":true}},
+ "Web":{"mac.example.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:\${FAKE_TS_PORT:-9999}"}}}}}
+JSON
+`,
+  { mode: 0o755 },
+)
+process.env.TAILSCALE_BIN = FAKE_TAILSCALE
+
 const host = await import('../index.js')
 const CLIENT_SOURCE = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'client.js'), 'utf8')
 
@@ -358,6 +376,48 @@ describe('host: spawned', () => {
   })
 })
 
+describe('host: tailnet mirror', () => {
+  it('maps only loopback proxies, and reads 443 from a bare host key', () => {
+    const map = host.parseServeMap({
+      Web: {
+        'mac.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } },
+        'mac.example.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8840' } } },
+        'mac.example.ts.net:9000': { Handlers: { '/': { Proxy: 'http://10.0.0.5:8841' } } },
+        'mac.example.ts.net:9443': { Handlers: { '/': { Proxy: 'unix:/tmp/x.sock' } } },
+      },
+    })
+    assert.deepEqual([...map.keys()].sort((a, b) => a - b), [8840, 9999], 'only loopback targets map back to a service')
+    assert.equal(map.get(8840).origin, 'https://mac.example.ts.net:8443')
+    assert.equal(map.get(9999).origin, 'https://mac.example.ts.net')
+  })
+
+  it('tolerates a missing or malformed config', () => {
+    assert.equal(host.parseServeMap(null).size, 0)
+    assert.equal(host.parseServeMap({}).size, 0)
+    assert.equal(host.parseServeMap({ Web: { 'host:443': { Handlers: {} } } }).size, 0)
+  })
+
+  it('publishes remoteUrl for a service whose port is on the tailnet', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const created = (await create(harness, { kind: 'spawned', dir: home, cmd: 'serve', path: '/index.html', start: false })).service
+    process.env.FAKE_TS_PORT = String(created.port)
+    const listed = readJson(await harness.call('list')).services.find((service) => service.id === created.id)
+    assert.equal(listed.remoteUrl, 'https://mac.example.ts.net:8443/index.html')
+    harness.dispose()
+  })
+
+  it('leaves remoteUrl empty when nothing publishes the port', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const created = (await create(harness, { kind: 'spawned', dir: home, cmd: 'other', start: false })).service
+    process.env.FAKE_TS_PORT = '9999' // the CLI publishes a different port
+    const listed = readJson(await harness.call('list')).services.find((service) => service.id === created.id)
+    assert.equal(listed.remoteUrl, '')
+    harness.dispose()
+  })
+})
+
 describe('host: registry', () => {
   it('persists definitions and reloads them as stopped', async () => {
     const first = makeCtx({ subprocess: makeSubprocess() })
@@ -586,8 +646,9 @@ function createHooks() {
 }
 
 /** Load the bundle the way the page does: a script defining one module. */
-function loadClient() {
+function loadClient(options = {}) {
   const hooks = createHooks()
+  const opened = []
   const React = {
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
     useState: (...args) => hooks.useState(...args),
@@ -604,6 +665,9 @@ function loadClient() {
           loaded = { id, exports: factory(() => React) }
         },
       },
+      // The desktop shell serves the UI from its own scheme; a phone sees https.
+      location: options.location ?? { protocol: 'dsh:', hostname: 'host' },
+      open: (...args) => opened.push(args),
     },
     fetch: (...args) => globalThis.fetch(...args),
     setInterval: () => 0,
@@ -611,7 +675,7 @@ function loadClient() {
     console,
   })
   runInContext(CLIENT_SOURCE, context, { filename: 'client.js' })
-  return { loaded, hooks, React }
+  return { loaded, hooks, React, opened }
 }
 
 /** Flatten a tree into text, so an assertion reads like the screen. */
@@ -652,12 +716,12 @@ function findButton(node, label) {
 }
 
 /** Mount the panel the sidebar would mount, with a fetch stub behind it. */
-async function mountPanel(services, onFetch) {
-  const { loaded, hooks } = loadClient()
+async function mountPanel(services, onFetch, options = {}) {
+  const { loaded, hooks, opened } = loadClient(options)
   const registered = []
-  const opened = []
+  const openedSessions = []
   const ctx = {
-    uiWorkspace: { openSession: (id) => opened.push(id) },
+    uiWorkspace: { openSession: (id) => openedSessions.push(id) },
     locale: makeLocale(),
     effect: (fn) => fn(),
     get: () => undefined,
@@ -700,7 +764,7 @@ async function mountPanel(services, onFetch) {
     return next
   }
 
-  return { tree, render, registered, opened }
+  return { tree, render, registered, opened, openedSessions }
 }
 
 /** The dictionary the bundle registers, so a rendered label reads as the user sees it. */
@@ -855,6 +919,62 @@ describe('client: panel', () => {
     )
   })
 
+  it('on a remote page opens the tailnet URL here, not the Host browser', async () => {
+    const calls = []
+    const { tree, opened } = await mountPanel(
+      [
+        {
+          id: 'svc-7',
+          name: 'radio',
+          kind: 'spawned',
+          dir: '/tmp/r',
+          cmd: 'serve',
+          port: 8840,
+          status: 'running',
+          url: 'http://127.0.0.1:8840/the-way-back/index.html',
+          remoteUrl: 'https://mac.example.ts.net:8443/the-way-back/index.html',
+          sessionId: '',
+        },
+      ],
+      (url) => calls.push(url),
+      { location: { protocol: 'https:', hostname: 'mac.example.ts.net' } },
+    )
+    const open = findButton(tree, '打开')
+    assert.ok(open, 'a published service still offers Open')
+    open.props.onClick()
+    assert.equal(opened.length, 1, 'window.open is what runs')
+    assert.equal(opened[0][0], 'https://mac.example.ts.net:8443/the-way-back/index.html')
+    assert.equal(opened[0][1], '_blank')
+    assert.equal(
+      calls.some((url) => String(url).includes('/api/localhost.reveal')),
+      false,
+      'the Host browser is never asked from a remote page',
+    )
+  })
+
+  it('on a remote page hides Open when the port is loopback only, and says so', async () => {
+    const { tree } = await mountPanel(
+      [
+        {
+          id: 'svc-8',
+          name: 'local-only',
+          kind: 'spawned',
+          dir: '/tmp/l',
+          cmd: 'serve',
+          port: 8850,
+          status: 'running',
+          url: 'http://127.0.0.1:8850/',
+          remoteUrl: '',
+          sessionId: '',
+        },
+      ],
+      undefined,
+      { location: { protocol: 'https:', hostname: 'mac.example.ts.net' } },
+    )
+    assert.equal(findButton(tree, '打开'), null, 'no button that would silently do nothing')
+    assert.match(textOf(tree), /只在本机可访问/)
+  })
+
   it('offers Open only for a running service', async () => {
     const stopped = await mountPanel([
       { id: 'svc-3', name: 'down', kind: 'static', dir: '/tmp/x', port: 8844, status: 'stopped', url: 'http://127.0.0.1:8844/', sessionId: '' },
@@ -877,7 +997,7 @@ describe('client: panel', () => {
   })
 
   it('jumps to the registering session when asked', async () => {
-    const { tree, render, opened } = await mountPanel([
+    const { tree, render, openedSessions } = await mountPanel([
       {
         id: 'svc-6',
         name: 'page',
@@ -893,7 +1013,7 @@ describe('client: panel', () => {
     const link = findButton(render(), '跳到会话')
     assert.ok(link, 'the expanded tile offers the session jump')
     link.props.onClick()
-    assert.deepEqual(opened, ['session-abcdef12-3456'], 'the jump reaches uiWorkspace with the session id')
+    assert.deepEqual(openedSessions, ['session-abcdef12-3456'], 'the jump reaches uiWorkspace with the session id')
   })
 
   it('expands a row into the directory, the entry file and the registering session', async () => {

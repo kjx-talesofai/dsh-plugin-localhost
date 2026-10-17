@@ -23,7 +23,7 @@
  * @module dsh-plugin-localhost
  */
 
-import { spawn as spawnOneShot } from 'node:child_process'
+import { execFile, spawn as spawnOneShot } from 'node:child_process'
 import { createServer } from 'node:http'
 import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -66,6 +66,42 @@ const CONTENT_TYPES = {
   '.map': 'application/json; charset=utf-8',
   '.pdf': 'application/pdf',
   '.wasm': 'application/wasm',
+}
+
+/**
+ * Parse `tailscale serve status --json` into local port → public URL.
+ *
+ * The shape is `{ Web: { "<host>:<port>": { Handlers: { "<prefix>": { Proxy: "http://127.0.0.1:<local>" } } } } }`,
+ * with the port omitted for 443. Only loopback proxies map back to a service we
+ * could be hosting; anything else is somebody else's mapping and is ignored.
+ *
+ * @param status - parsed JSON, or null when the CLI failed.
+ * @returns a Map from local port to `{ origin, prefix }`.
+ */
+export function parseServeMap(status) {
+  const map = new Map()
+  const web = status?.Web
+  if (!web || typeof web !== 'object') return map
+  for (const [key, entry] of Object.entries(web)) {
+    const handlers = entry?.Handlers
+    if (!handlers || typeof handlers !== 'object') continue
+    const match = /^(.*?)(?::(\d+))?$/.exec(key)
+    if (!match) continue
+    const host = match[1]
+    const port = match[2] === undefined ? 443 : Number(match[2])
+    const origin = `https://${host}${port === 443 ? '' : `:${port}`}`
+    for (const [prefix, handler] of Object.entries(handlers)) {
+      const proxy = handler?.Proxy
+      if (typeof proxy !== 'string') continue
+      const local = /^https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)/.exec(proxy)
+      if (!local) continue
+      map.set(Number(local[1]), {
+        origin,
+        prefix: prefix.endsWith('/') ? prefix.slice(0, -1) : prefix,
+      })
+    }
+  }
+  return map
 }
 
 /** Hard dependencies: the routes and the admit fence. Everything else is optional. */
@@ -182,6 +218,54 @@ export function apply(ctx) {
   }
 
   /**
+   * The tailnet mirror. Only this half can run a command, and the phone's browser
+   * cannot see this machine's `tailscale serve` config at all — so the Host reads
+   * it, at most once per REFRESH_MS, and only when a list is asked for.
+   */
+  const REFRESH_MS = 5000
+  let serveMap = new Map()
+  let serveMapAt = 0
+  let serveRefresh = null
+
+  /** Refresh the port → URL mirror; a concurrent caller shares the in-flight run. */
+  async function refreshServeMap() {
+    if (Date.now() - serveMapAt < REFRESH_MS) return
+    if (serveRefresh !== null) {
+      await serveRefresh
+      return
+    }
+    serveRefresh = new Promise((done) => {
+      execFile(
+        process.env.TAILSCALE_BIN || 'tailscale',
+        ['serve', 'status', '--json'],
+        { timeout: 2000 },
+        (error, stdout) => {
+          serveMapAt = Date.now()
+          // Absent, stopped, or not logged in: "not published" is the truth, and
+          // it must never break the panel.
+          serveMap = new Map()
+          if (!error) {
+            try {
+              serveMap = parseServeMap(JSON.parse(stdout))
+            } catch {}
+          }
+          done(undefined)
+        },
+      )
+    })
+    const running = serveRefresh
+    serveRefresh = null
+    await running
+  }
+
+  /** The URL a phone can reach this service at, or '' when nothing publishes it. */
+  function remoteUrlOf(entry) {
+    const published = serveMap.get(entry.port)
+    if (!published) return ''
+    return `${published.origin}${published.prefix}${entry.path || ''}`
+  }
+
+  /**
    * The one field list both `view()` and the tool's output schema use. They
    * drifted in 0.1.2 — `entry` and the runtime fields were returned but not
    * declared, and `additionalProperties: false` turned every `serve list` into a
@@ -194,6 +278,7 @@ export function apply(ctx) {
     status: 'string',
     port: 'integer',
     url: 'string',
+    remoteUrl: 'string',
     path: 'string',
     dir: 'string',
     cmd: 'string',
@@ -214,7 +299,8 @@ export function apply(ctx) {
     kind: 'spawned | static.',
     status: 'running | starting | stopped | exited.',
     port: 'Assigned port on 127.0.0.1.',
-    url: 'What Open loads (port + path).',
+    url: 'What Open loads on this machine (port + path).',
+    remoteUrl: 'The same page over Tailscale, when this port is published there.',
     path: 'URL path Open appends to the port; empty means the root.',
     dir: 'Working directory (spawned) or document root (static).',
     cmd: 'The registered start command; empty for static.',
@@ -252,6 +338,7 @@ export function apply(ctx) {
       createdAt: entry.createdAt,
       status: state?.status ?? 'stopped',
       url: `http://127.0.0.1:${entry.port}${entry.path || '/'}`,
+      remoteUrl: remoteUrlOf(entry),
       pid: state?.pid ?? null,
       startedAt: state?.startedAt ?? null,
       exitCode: state?.exitCode ?? null,
@@ -573,6 +660,7 @@ export function apply(ctx) {
   }
 
   route('list', async (req, res) => {
+    await refreshServeMap()
     sendJson(res, 200, { services: entries.map(view), portRange: [PORT_MIN, PORT_MAX] })
   }, 'GET')
 
@@ -718,6 +806,7 @@ export function apply(ctx) {
           async execute(args, exec) {
             const action = String(args?.action || 'list')
             if (action === 'list') {
+              await refreshServeMap()
               return { services: entries.map((entry) => ({ ...view(entry) })) }
             }
             if (action === 'register') {

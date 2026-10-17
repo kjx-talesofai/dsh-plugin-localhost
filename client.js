@@ -90,6 +90,8 @@ window.__ModuleLoader__.load({
       'detail.revealDir': '用 Finder 打开',
       'detail.revealFile': '显示入口文件',
       'detail.gotoSession': '跳到会话',
+      'detail.remoteUrl': '远端地址',
+      'note.loopbackOnly': '只在本机可访问：这个端口没有 tailnet 映射。',
       'detail.logsEmpty': '还没有输出。',
       'detail.logsLossy': '输出过长，只保留了最近的片段。',
       'error.list': '读取失败：',
@@ -123,6 +125,8 @@ window.__ModuleLoader__.load({
       'detail.revealDir': 'Show in Finder',
       'detail.revealFile': 'Show entry file',
       'detail.gotoSession': 'Open session',
+      'detail.remoteUrl': 'Over Tailscale',
+      'note.loopbackOnly': 'Loopback only — nothing publishes this port on the tailnet.',
       'detail.logsEmpty': 'No output yet.',
       'detail.logsLossy': 'Output was long; only the recent tail is kept.',
       'error.list': 'Could not read: ',
@@ -172,6 +176,25 @@ window.__ModuleLoader__.load({
 .lh-navdot{display:block;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
 .lh-foot{padding:10px 20px 14px;color:var(--dsw-alias-label-tertiary);font-size:11.5px;border-top:1px solid var(--dsw-alias-border-l4)}
 `
+
+    /**
+     * Is this page being viewed from another device?
+     *
+     * `127.0.0.1:8840` means the machine the reader is holding. Only a loopback
+     * page can open the Host's ports directly; a phone over Tailscale has to use
+     * the tailnet URL, which is why the registry carries `remoteUrl` too.
+     */
+    function isLoopbackClient() {
+      try {
+        const { protocol, hostname } = window.location
+        // The desktop shell loads the UI from its own scheme; that page *is* the
+        // host, so it counts as local no matter what the scheme calls itself.
+        if (protocol === 'dsh:' || protocol === 'file:') return true
+        return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]'
+      } catch {
+        return true
+      }
+    }
 
     /** The registry, as the panel and the nav dot both read it. */
     async function fetchServices() {
@@ -277,6 +300,7 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      const remote = !isLoopbackClient()
       const running = services.filter((service) => service.status === 'running').length
 
       return h(
@@ -315,7 +339,19 @@ window.__ModuleLoader__.load({
                   onStart: () => act(API.start, service.id, t('busy.start')),
                   onStop: () => act(API.stop, service.id, t('busy.stop')),
                   onReveal: (target) => reveal(service.id, target),
-                  onOpen: () => reveal(service.id, 'url'),
+                  remote,
+                  onOpen: () => {
+                    // On a remote page the Host's browser is the wrong place: open
+                    // the tailnet URL here instead, and never fall back to the Host.
+                    if (!remote) return reveal(service.id, 'url')
+                    if (service.remoteUrl) {
+                      try {
+                        window.open(service.remoteUrl, '_blank', 'noopener')
+                      } catch (failure) {
+                        setError(String(failure?.message ?? failure))
+                      }
+                    }
+                  },
                   onSession: props.openSession,
                 }),
               ),
@@ -324,9 +360,15 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** The four states the dot can be in; anything else reads as stopped. */
+    function statusOf(status) {
+      return status === 'running' || status === 'starting' || status === 'exited' ? status : 'stopped'
+    }
+
     /** One service as a tile: identity, where it lives, one action set. */
     function ServiceCard(props) {
-      const { service, t, busy, expanded, logs, lossy } = props
+      const { service, t, busy, expanded, logs, lossy, remote } = props
+      const canOpen = statusOf(service.status) === 'running' && (!remote || Boolean(service.remoteUrl))
       const status =
         service.status === 'running' || service.status === 'starting' || service.status === 'exited'
           ? service.status
@@ -354,7 +396,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'lh-actions' },
-          status === 'running'
+          canOpen
             ? h('button', { className: 'lh-btn', type: 'button', onClick: props.onOpen }, t('action.open'))
             : null,
           started
@@ -364,6 +406,9 @@ window.__ModuleLoader__.load({
           h('button', { className: 'lh-btn', type: 'button', onClick: props.onToggle }, expanded ? '▲' : '▼'),
         ),
         service.error ? h('div', { className: 'lh-note' }, service.error) : null,
+        remote && statusOf(service.status) === 'running' && !service.remoteUrl
+          ? h('div', { className: 'lh-note' }, t('note.loopbackOnly'))
+          : null,
         expanded ? h(Detail, { ...props, logs, lossy }) : null,
       )
     }
@@ -386,6 +431,14 @@ window.__ModuleLoader__.load({
             h('button', { className: 'lh-link', type: 'button', onClick: () => props.onReveal('dir') }, t('detail.revealDir')),
           ),
         ),
+        service.remoteUrl
+          ? h(
+              'div',
+              { className: 'lh-field' },
+              h('span', { className: 'lh-label' }, t('detail.remoteUrl')),
+              h('span', { className: 'lh-value lh-mono' }, service.remoteUrl),
+            )
+          : null,
         service.kind === 'static'
           ? h(
               'div',

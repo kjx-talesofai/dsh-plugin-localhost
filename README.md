@@ -22,7 +22,7 @@ agent 在开发里起服务是常态：`pnpm dev`、`python -m http.server`、�
 ## 装
 
 ```
-github:kjx-talesofai/dsh-plugin-localhost#v0.2.3
+github:kjx-talesofai/dsh-plugin-localhost#v0.3.0
 ```
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -61,7 +61,8 @@ github:kjx-talesofai/dsh-plugin-localhost#v0.2.3
 - **DSH 退出 = 全部停止**。重启后所有条目显示"已停止"，需要手动点启动；不会偷偷帮你拉起来。
 - **端口是分给它的**，所以别在别的脚本里硬编码 8840。想要固定端口就在 `cmd` 里自己用 `$PORT`。
 - **静态页由它自己发**，不是复制文件：`dir` 改了立刻生效，`dir` 删了就 404。
-- **只在 127.0.0.1 上**。这个端口没有认证，不要以为它是个"分享"按钮；要给别人看，那是 Tailscale 那个插件的事。
+- **只在 127.0.0.1 上**。这个端口没有认证，不要以为它是个"分享"按钮；要给别人看，走 Tailscale。
+- **从手机打开**：面板会读 `tailscale serve status`，把已经发布到 tailnet 的端口配上远端地址；此时「打开」在**你的手机浏览器**里打开那个地址，而不是让 Mac 弹浏览器。没发布的端口在手机上不给「打开」按钮，并明说只在本机可访问。
 - 静态页的 SPA 回退**只对浏览器导航生效**（`Accept: text/html`），这样 `/etc/hosts` 这类路径不会假装成路由。
 
 ## Compatibility
@@ -80,7 +81,7 @@ github:kjx-talesofai/dsh-plugin-localhost#v0.2.3
 ## 开发
 
 ```sh
-npm test    # 39 条，不需要安装任何依赖
+npm test    # 45 条，不需要安装任何依赖
 ```
 
 Host 半边没有运行时依赖，所以测试**真的 import 它**，用假 ctx 驱动：静态服务走真实 socket，spawned 走假 subprocess，断言的是 spawn 规格而不是"看起来跑了"。Client 半边按页面加载的方式在 `node:vm` 里求值，再用一个迷你 hooks 运行时把面板渲染出来断言。
@@ -116,7 +117,7 @@ The panel sits under Tailscale Remote Access: status, name, kind, port, and one 
 ## Development
 
 ```sh
-npm test    # 39 tests, no install step
+npm test    # 45 tests, no install step
 ```
 
 The Host half has no runtime dependencies, so the suite imports it and drives a fake context: the static server over a real socket, the spawned path through a fake `ctx.subprocess`. The Client half is evaluated as a script in `node:vm` and rendered through a small hooks runtime.
