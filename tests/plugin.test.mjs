@@ -623,6 +623,15 @@ function textOf(node) {
   return (node.children ?? []).map(textOf).join('')
 }
 
+/** Count nodes carrying a class, so a layout assertion can see the grid it got. */
+function countClass(node, className) {
+  if (!node || typeof node !== 'object') return 0
+  if (Array.isArray(node)) return node.reduce((total, child) => total + countClass(child, className), 0)
+  if (typeof node.type === 'function') return countClass(node.type(node.props), className)
+  const own = String(node.props?.className ?? '').split(' ').includes(className) ? 1 : 0
+  return own + (node.children ?? []).reduce((total, child) => total + countClass(child, className), 0)
+}
+
 /** Find the first button whose label matches, so a click test clicks the real control. */
 function findButton(node, label) {
   if (!node || typeof node !== 'object') return null
@@ -646,7 +655,9 @@ function findButton(node, label) {
 async function mountPanel(services, onFetch) {
   const { loaded, hooks } = loadClient()
   const registered = []
+  const opened = []
   const ctx = {
+    uiWorkspace: { openSession: (id) => opened.push(id) },
     locale: makeLocale(),
     effect: (fn) => fn(),
     get: () => undefined,
@@ -689,7 +700,7 @@ async function mountPanel(services, onFetch) {
     return next
   }
 
-  return { tree, render, registered }
+  return { tree, render, registered, opened }
 }
 
 /** The dictionary the bundle registers, so a rendered label reads as the user sees it. */
@@ -727,7 +738,7 @@ describe('client: bundle', () => {
     const { loaded } = loadClient()
     assert.equal(loaded.id, 'dsh-plugin-localhost')
     assert.equal(typeof loaded.exports.apply, 'function')
-    assert.equal(Array.from(loaded.exports.inject).join(','), 'slots,locale')
+    assert.equal(Array.from(loaded.exports.inject).join(','), 'slots,locale,uiWorkspace')
   })
 
   it('seats the nav row between Tailscale and Automation tasks', () => {
@@ -799,6 +810,35 @@ describe('client: panel', () => {
       { id: 'svc-4', name: 'up', kind: 'static', dir: '/tmp/x', port: 8845, status: 'running', url: 'http://127.0.0.1:8845/', sessionId: '' },
     ])
     assert.ok(findButton(running.tree, '打开'), 'a running service can be opened')
+  })
+
+  it('lays services out as tiles, not as one low-density row each', async () => {
+    const { tree } = await mountPanel([
+      { id: 'a', name: 'alpha', kind: 'static', dir: '/tmp/a', port: 8841, status: 'stopped', url: 'http://127.0.0.1:8841/', sessionId: '' },
+      { id: 'b', name: 'beta', kind: 'spawned', dir: '/tmp/b', cmd: 'serve', port: 8842, status: 'running', url: 'http://127.0.0.1:8842/', sessionId: '' },
+    ])
+    assert.equal(countClass(tree, 'lh-grid'), 1, 'the list is a grid')
+    assert.equal(countClass(tree, 'lh-card'), 2, 'one tile per service')
+  })
+
+  it('jumps to the registering session when asked', async () => {
+    const { tree, render, opened } = await mountPanel([
+      {
+        id: 'svc-6',
+        name: 'page',
+        kind: 'static',
+        dir: '/tmp/site',
+        port: 8847,
+        status: 'stopped',
+        url: 'http://127.0.0.1:8847/',
+        sessionId: 'session-abcdef12-3456',
+      },
+    ])
+    findButton(tree, '▼').props.onClick()
+    const link = findButton(render(), '跳到会话')
+    assert.ok(link, 'the expanded tile offers the session jump')
+    link.props.onClick()
+    assert.deepEqual(opened, ['session-abcdef12-3456'], 'the jump reaches uiWorkspace with the session id')
   })
 
   it('expands a row into the directory, the entry file and the registering session', async () => {

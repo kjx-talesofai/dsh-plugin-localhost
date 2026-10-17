@@ -162,3 +162,18 @@ Client 半边按页面加载的方式在 `node:vm` 求值，迷你 hooks 运行�
 ### 为什么不是 CLI + SKILL
 
 同一轮里权衡过：skill 是按需加载的手册，而这里要防的是「起服务那一瞬间没想到登记」——手册救不了那一刻，工具列表可以。CLI 还要另造 token 认证和第二条与工具同步的输出契约（0.1.1、0.1.2 两个 bug 都是「两个地方要一致却没一致」）。等出现第二个消费者（人/脚本/别的 harness）再谈。
+
+## 13. 长条不是密度（v0.2.1）
+
+一行一个服务的排版，信息密度极低：一行里能放的东西（名字、类型、端口、状态）反而把宽度浪费在空白上。改成 tile：
+
+- `grid-template-columns: repeat(auto-fill, minmax(296px, 1fr))` —— 宽了自动多列，窄了自动一列；
+- 每张卡：名字 + 类型、端口 + 状态、完整 URL 一行省略、动作按钮；展开是卡内的详情（目录、命令、会话、日志）。
+
+URL 单独占一行而不是塞在 meta 里，是因为它才是"这东西在哪"的答案。
+
+### 顺手修掉：跳到会话点不动
+
+`uiWorkspace` 之前是用 `serviceOf(ctx, ...)`（也就是 `ctx.get`）拿的。**客户端 ctx 是白名单代理**，没在 `inject` 里声明的服务拿不到——返回 undefined，于是点击静默无效果。
+
+palette 里写的是 `const inject = ['slots','locale','sessions','uiWorkspace', ...]`，直接 `ctx.uiWorkspace.openSession(id)`。这里照做：声明 `uiWorkspace`，并且加了一条测试真的点那下按钮、断言 `openSession` 收到正确的 session id。

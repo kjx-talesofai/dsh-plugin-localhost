@@ -114,15 +114,6 @@ window.__ModuleLoader__.load({
       'busy.stop': 'Stopping…',
     }
 
-    /** Optional service lookup: a whitelisting proxy throws for undeclared names. */
-    function serviceOf(ctx, name) {
-      try {
-        return typeof ctx.get === 'function' ? ctx.get(name) : undefined
-      } catch {
-        return undefined
-      }
-    }
-
     const CSS = `
 .lh-root{display:flex;flex-direction:column;height:100%;min-height:0;font-size:13px;color:var(--dsw-alias-label-primary)}
 .lh-head{display:flex;align-items:baseline;gap:10px;padding:16px 20px 12px;border-bottom:1px solid var(--dsw-alias-border-l4)}
@@ -131,32 +122,32 @@ window.__ModuleLoader__.load({
 .lh-spacer{flex:1}
 .lh-ghost{border:0;background:none;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;padding:2px 6px;border-radius:6px}
 .lh-ghost:hover{background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
-.lh-list{flex:1;min-height:0;overflow:auto;padding:8px 12px}
-.lh-row{border-radius:10px;padding:10px 12px;transition:background .12s}
-.lh-row:hover{background:var(--dsw-alias-interactive-bg-hover-solid)}
-.lh-line{display:flex;align-items:center;gap:8px;min-height:22px}
+.lh-grid{flex:1;min-height:0;overflow:auto;padding:12px 16px 20px;display:grid;gap:10px;align-content:start;grid-template-columns:repeat(auto-fill,minmax(296px,1fr))}
+.lh-card{border:1px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-1);padding:12px 13px;display:flex;flex-direction:column;gap:9px;min-width:0;transition:background .12s,border-color .12s}
+.lh-card:hover{background:var(--dsw-alias-bg-layer-2)}
+.lh-card-head{display:flex;align-items:center;gap:8px;min-width:0}
 .lh-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dsw-alias-state-idle-primary)}
 .lh-dot.running{background:var(--dsw-alias-state-success-primary)}
 .lh-dot.starting{background:var(--dsw-alias-state-warn-primary)}
 .lh-dot.exited{background:var(--dsw-alias-state-error-primary)}
-.lh-name{font-weight:500;max-width:34ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lh-kind{font-size:11px;color:var(--dsw-alias-label-tertiary);border:1px solid var(--dsw-alias-border-l4);border-radius:5px;padding:0 5px;line-height:16px}
-.lh-port{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary-dimmed);font-size:12px}
-.lh-status{color:var(--dsw-alias-label-tertiary);font-size:12px}
-.lh-actions{display:flex;gap:4px;opacity:0}
-.lh-row:hover .lh-actions,.lh-row:focus-within .lh-actions{opacity:1}
-.lh-btn{border:1px solid var(--dsw-alias-border-l4);background:none;color:var(--dsw-alias-label-primary-dimmed);font:inherit;font-size:11.5px;padding:2px 8px;border-radius:6px;cursor:pointer}
+.lh-name{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lh-kind{font-size:10.5px;color:var(--dsw-alias-label-tertiary);border:1px solid var(--dsw-alias-border-l4);border-radius:5px;padding:0 5px;line-height:15px;flex:none}
+.lh-meta{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dsw-alias-label-tertiary);min-width:0}
+.lh-port{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary)}
+.lh-url{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr}
+.lh-actions{display:flex;gap:6px;align-items:center}
+.lh-btn{border:1px solid var(--dsw-alias-border-l4);background:none;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;padding:3px 9px;border-radius:6px;cursor:pointer}
 .lh-btn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2)}
 .lh-btn:disabled{opacity:.5;cursor:default}
-.lh-detail{margin-top:8px;padding:10px 12px;border-radius:8px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l4);display:grid;gap:6px}
-.lh-field{display:grid;grid-template-columns:88px 1fr;gap:10px;align-items:baseline}
-.lh-label{color:var(--dsw-alias-label-tertiary);font-size:11.5px}
-.lh-value{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere;font-size:12px}
-.lh-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-.lh-link{border:0;background:none;padding:0;color:var(--dsw-alias-label-primary);cursor:pointer;font:inherit;font-size:12px;text-decoration:underline;text-underline-offset:2px}
-.lh-log{margin-top:6px;max-height:220px;overflow:auto;background:var(--dsw-alias-bg-layer-2);border-radius:6px;padding:8px 10px;white-space:pre-wrap;line-height:1.5}
-.lh-logline{color:var(--dsw-alias-label-primary-dimmed)}
-.lh-note{color:var(--dsw-alias-state-warn-label);font-size:11.5px}
+.lh-detail{display:grid;gap:6px;padding-top:9px;border-top:1px solid var(--dsw-alias-border-l4)}
+.lh-field{display:grid;grid-template-columns:74px 1fr;gap:8px;align-items:baseline;min-width:0}
+.lh-label{color:var(--dsw-alias-label-tertiary);font-size:11px}
+.lh-value{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere;font-size:11.5px;min-width:0}
+.lh-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.lh-link{border:0;background:none;padding:0;color:var(--dsw-alias-label-primary);cursor:pointer;font:inherit;font-size:11.5px;text-decoration:underline;text-underline-offset:2px}
+.lh-log{margin-top:4px;max-height:150px;overflow:auto;background:var(--dsw-alias-bg-layer-2);border-radius:6px;padding:7px 9px;white-space:pre-wrap;line-height:1.5}
+.lh-logline{color:var(--dsw-alias-label-secondary)}
+.lh-note{color:var(--dsw-alias-state-warn-label);font-size:11px}
 .lh-err{color:var(--dsw-alias-state-error-primary);font-size:12px;padding:0 20px 8px}
 .lh-empty{padding:56px 24px;text-align:center;color:var(--dsw-alias-label-secondary);line-height:1.9}
 .lh-empty b{display:block;color:var(--dsw-alias-label-primary);font-weight:500;margin-bottom:4px;font-size:13px}
@@ -196,11 +187,6 @@ window.__ModuleLoader__.load({
           clearInterval(timer)
         }
       }, [refresh])
-
-      const expandedService = useMemo(
-        () => services.find((service) => service.id === expanded) ?? null,
-        [services, expanded],
-      )
 
       useEffect(() => {
         if (!expanded) return undefined
@@ -290,9 +276,9 @@ window.__ModuleLoader__.load({
             )
           : h(
               'div',
-              { className: 'lh-list' },
+              { className: 'lh-grid' },
               services.map((service) =>
-                h(ServiceRow, {
+                h(ServiceCard, {
                   key: service.id,
                   service,
                   t,
@@ -303,7 +289,6 @@ window.__ModuleLoader__.load({
                   onToggle: () => setExpanded(expanded === service.id ? null : service.id),
                   onStart: () => act(API.start, service.id, t('busy.start')),
                   onStop: () => act(API.stop, service.id, t('busy.stop')),
-                  onRemove: () => act(API.remove, service.id, t('busy.stop')),
                   onReveal: (target) => reveal(service.id, target),
                   onOpen: () => reveal(service.id, 'url'),
                   onSession: props.openSession,
@@ -314,35 +299,44 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** One registry row, with its detail fold. */
-    function ServiceRow(props) {
+    /** One service as a tile: identity, where it lives, one action set. */
+    function ServiceCard(props) {
       const { service, t, busy, expanded, logs, lossy } = props
-      const status = service.status === 'running' || service.status === 'starting' || service.status === 'exited' ? service.status : 'stopped'
+      const status =
+        service.status === 'running' || service.status === 'starting' || service.status === 'exited'
+          ? service.status
+          : 'stopped'
       const started = status === 'running' || status === 'starting'
 
       return h(
         'div',
-        { className: 'lh-row' },
+        { className: 'lh-card' },
         h(
           'div',
-          { className: 'lh-line' },
+          { className: 'lh-card-head' },
           h('span', { className: `lh-dot ${status}` }),
           h('span', { className: 'lh-name', title: service.name }, service.name),
-          h('span', { className: 'lh-kind' }, t(`kind.${service.kind}`)),
-          h('span', { className: 'lh-port' }, `:${service.port}`),
-          h('span', { className: 'lh-status' }, busy ?? t(`status.${status}`)),
           h('span', { className: 'lh-spacer' }),
-          h(
-            'span',
-            { className: 'lh-actions' },
-            status === 'running'
-              ? h('button', { className: 'lh-btn', type: 'button', onClick: props.onOpen }, t('action.open'))
-              : null,
-            started
-              ? h('button', { className: 'lh-btn', type: 'button', disabled: Boolean(busy), onClick: props.onStop }, t('action.stop'))
-              : h('button', { className: 'lh-btn', type: 'button', disabled: Boolean(busy), onClick: props.onStart }, t('action.start')),
-            h('button', { className: 'lh-btn', type: 'button', onClick: props.onToggle }, expanded ? '▲' : '▼'),
-          ),
+          h('span', { className: 'lh-kind' }, t(`kind.${service.kind}`)),
+        ),
+        h(
+          'div',
+          { className: 'lh-meta' },
+          h('span', { className: 'lh-port' }, `:${service.port}`),
+          h('span', null, busy ?? t(`status.${status}`)),
+        ),
+        h('div', { className: 'lh-url', title: service.url }, service.url),
+        h(
+          'div',
+          { className: 'lh-actions' },
+          status === 'running'
+            ? h('button', { className: 'lh-btn', type: 'button', onClick: props.onOpen }, t('action.open'))
+            : null,
+          started
+            ? h('button', { className: 'lh-btn', type: 'button', disabled: Boolean(busy), onClick: props.onStop }, t('action.stop'))
+            : h('button', { className: 'lh-btn', type: 'button', disabled: Boolean(busy), onClick: props.onStart }, t('action.start')),
+          h('span', { className: 'lh-spacer' }),
+          h('button', { className: 'lh-btn', type: 'button', onClick: props.onToggle }, expanded ? '▲' : '▼'),
         ),
         service.error ? h('div', { className: 'lh-note' }, service.error) : null,
         expanded ? h(Detail, { ...props, logs, lossy }) : null,
@@ -355,12 +349,6 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'lh-detail' },
-        h(
-          'div',
-          { className: 'lh-field' },
-          h('span', { className: 'lh-label' }, t('detail.url')),
-          h('span', { className: 'lh-value lh-mono' }, service.url),
-        ),
         h(
           'div',
           { className: 'lh-field' },
@@ -458,7 +446,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    const inject = ['slots', 'locale']
+    const inject = ['slots', 'locale', 'uiWorkspace']
 
     /**
      * Mount the panel and the nav row.
@@ -469,7 +457,16 @@ window.__ModuleLoader__.load({
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), `${NS}: dictionaries`)
       const t = ctx.locale.bind(NS)
 
-      const uiWorkspace = serviceOf(ctx, 'uiWorkspace')
+      // Declared in `inject`: the client context is a whitelisting proxy, so an
+      // undeclared lookup returns undefined and the session jump silently did
+      // nothing. (0.1.x read it through serviceOf and never noticed.)
+      const openSession = (id) => {
+        try {
+          ctx.uiWorkspace?.openSession?.(id)
+        } catch (failure) {
+          console.warn(`localhost: could not open session ${id}: ${failure?.message ?? failure}`)
+        }
+      }
 
       ctx.effect(() => {
         if (typeof document === 'undefined') return undefined
@@ -502,10 +499,7 @@ window.__ModuleLoader__.load({
             locale: NS,
           },
           function LocalhostPage() {
-            return h(Panel, {
-              t,
-              openSession: (id) => uiWorkspace?.openSession?.(id),
-            })
+            return h(Panel, { t, openSession })
           },
         ),
       )
