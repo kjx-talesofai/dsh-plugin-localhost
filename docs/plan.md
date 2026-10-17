@@ -141,3 +141,24 @@ Client 半边按页面加载的方式在 `node:vm` 求值，迷你 hooks 运行�
 1. **工具输出被自己的 schema 拒收。** `view()` 返回 `entry`/`pid`/`startedAt` 等字段，而 schema 只声明了子集，`additionalProperties: false` 于是报 `"value.services[0].entry" is not a declared property`——服务起来了，结果吐不出来。现在字段表是**一份数据**（`FIELD_TYPES`），`view()` 和 schema 都从它派生，测试对比两边。
 2. **登记会话永远是空的。** 我编了一个 `context.__agent`，真实字段是 `exec.agent`。所以那条 `kibellah-radio` 的 `sessionId` 是空字符串。
 3. **重复登记会占第二个端口。** 同一个目录同一条命令再登记一次，现在是**更新**（补 `path`、改名字），不是新增。忘了 `path` 的 agent 因此不需要"删掉重来"——那会把一个正在工作的服务杀掉。
+
+## 12. 工具是预算，不是散文（v0.2.0）
+
+`serve` 是**全局工具**：每个 agent、每次请求都在列表里。所以它的体积不是文风问题，是配额问题。量出来的数字：
+
+| 版本 | 模型可见负载（name + description + parameters） |
+|---|---|
+| 0.1.x | 1668 字符 ≈ **417 tokens** |
+| 0.2.0 | 975 字符 ≈ **244 tokens** |
+
+砍掉的都是不承载信息的字：
+
+- description 从两段并成一句：管什么、端口谁分、什么时候会停；
+- `action` 和 `kind` 的 `enum` 下面还各有一句重复枚举的 description——删；
+- `entry` 参数删掉（静态页默认 `index.html`，真要改有 `path`）。
+
+测试里钉了**预算**：序列化负载超过 1000 字符就红。以后想加字段，得先决定从哪儿省。
+
+### 为什么不是 CLI + SKILL
+
+同一轮里权衡过：skill 是按需加载的手册，而这里要防的是「起服务那一瞬间没想到登记」——手册救不了那一刻，工具列表可以。CLI 还要另造 token 认证和第二条与工具同步的输出契约（0.1.1、0.1.2 两个 bug 都是「两个地方要一致却没一致」）。等出现第二个消费者（人/脚本/别的 harness）再谈。

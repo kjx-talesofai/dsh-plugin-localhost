@@ -461,6 +461,34 @@ describe('host: tool', () => {
   })
 })
 
+describe('host: tool budget', () => {
+  // This tool sits in every agent's list on every request, so its size is a
+  // budget, not an accident: 0.1.x shipped 1668 chars and 0.2.0 trims to under
+  // 1000. Raising this number is a decision, not a side effect of editing prose.
+  const BUDGET_CHARS = 1000
+
+  it('keeps the model-facing payload inside the budget', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const tool = harness.tools[0]
+    const payload = JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters })
+    assert.ok(
+      payload.length <= BUDGET_CHARS,
+      `serve is ${payload.length} chars (~${Math.round(payload.length / 4)} tokens); the budget is ${BUDGET_CHARS}`,
+    )
+    harness.dispose()
+  })
+
+  it('exposes exactly the parameters it uses, and no prose in the enums', () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const parameters = harness.tools[0].parameters
+    assert.deepEqual(Object.keys(parameters.properties).sort(), ['action', 'cmd', 'dir', 'id', 'kind', 'name', 'path', 'start'])
+    assert.equal(parameters.properties.kind.description, undefined, 'the enum already says spawned | static')
+    harness.dispose()
+  })
+})
+
 describe('host: tool definition', () => {
   // `ctx.tools.register` takes a finished ToolDefinition: `parameters` and
   // `output.schema` are real JSON Schema. The parameter-*spec* dialect (a boolean
