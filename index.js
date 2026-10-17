@@ -142,6 +142,9 @@ export function apply(ctx) {
       dir,
       cmd: kind === 'spawned' ? String(definition.cmd) : '',
       entry: kind === 'static' ? String(definition.entry || '') : '',
+      // What "Open" should hit. A spawned app rarely serves `/`; the registrar
+      // knows the real page, and guessing the root is how Open lands on a 404.
+      path: normalizePath(definition.path),
       port: 0,
       sessionId: definition.sessionId ? String(definition.sessionId) : '',
       createdAt: Date.now(),
@@ -151,32 +154,117 @@ export function apply(ctx) {
 
   async function register(definition) {
     const entry = create(definition)
+    // Re-registering the same thing updates it instead of taking a second port.
+    // An agent that forgot `path` has no other way back: stop/remove/re-register
+    // would kill a service that is working.
+    const already = entries.find(
+      (candidate) =>
+        candidate.kind === entry.kind &&
+        candidate.dir === entry.dir &&
+        (entry.kind === 'static' || candidate.cmd === entry.cmd),
+    )
+    if (already) {
+      const merged = {
+        ...already,
+        name: entry.name || already.name,
+        path: entry.path || already.path,
+        entry: entry.entry || already.entry,
+        sessionId: entry.sessionId || already.sessionId,
+      }
+      entries = entries.map((candidate) => (candidate.id === already.id ? merged : candidate))
+      save()
+      return merged
+    }
     entry.port = await allocate()
     entries = [...entries, entry]
     save()
     return entry
   }
 
+  /**
+   * The one field list both `view()` and the tool's output schema use. They
+   * drifted in 0.1.2 — `entry` and the runtime fields were returned but not
+   * declared, and `additionalProperties: false` turned every `serve list` into a
+   * tool error — so the list is now data, and a test compares the two.
+   */
+  const FIELD_TYPES = {
+    id: 'string',
+    name: 'string',
+    kind: 'string',
+    status: 'string',
+    port: 'integer',
+    url: 'string',
+    path: 'string',
+    dir: 'string',
+    cmd: 'string',
+    entry: 'string',
+    sessionId: 'string',
+    pid: 'integer',
+    startedAt: 'integer',
+    exitCode: 'integer',
+    error: 'string',
+    logLossy: 'boolean',
+    createdAt: 'integer',
+  }
+
+  /** Field notes for the model-facing schema; absent is fine. */
+  const SERVICE_FIELD_NOTES = {
+    id: 'Service id, for start/stop/logs.',
+    name: 'Panel label.',
+    kind: 'spawned | static.',
+    status: 'running | starting | stopped | exited.',
+    port: 'Assigned port on 127.0.0.1.',
+    url: 'What Open loads (port + path).',
+    path: 'URL path Open appends to the port; empty means the root.',
+    dir: 'Working directory (spawned) or document root (static).',
+    cmd: 'The registered start command; empty for static.',
+    entry: 'Static only: the page index.html resolves to.',
+    sessionId: 'The session that registered it.',
+    pid: 'Process id while running (the Host itself for static).',
+    startedAt: 'Epoch ms of the current run.',
+    exitCode: 'Last exit code, when the process exited.',
+    error: 'Why it is not running, when there is a reason.',
+    logLossy: 'True when old output was dropped from the kept tail.',
+    createdAt: 'Epoch ms of registration.',
+  }
+
+  /** A URL path, or '' for the root. Absolute, and never able to climb out. */
+  function normalizePath(value) {
+    const text = String(value ?? '').trim()
+    if (text === '' || text === '/') return ''
+    if (!text.startsWith('/')) throw new Error('path must start with /')
+    if (text.includes('..')) throw new Error('path must not contain ..')
+    return text
+  }
+
   function view(entry) {
     const state = runtime.get(entry.id)
-    return {
+    const raw = {
       id: entry.id,
       name: entry.name,
       kind: entry.kind,
       dir: entry.dir,
       cmd: entry.cmd,
       entry: entry.entry,
+      path: entry.path || '',
       port: entry.port,
       sessionId: entry.sessionId,
       createdAt: entry.createdAt,
       status: state?.status ?? 'stopped',
-      url: `http://127.0.0.1:${entry.port}/`,
+      url: `http://127.0.0.1:${entry.port}${entry.path || '/'}`,
       pid: state?.pid ?? null,
       startedAt: state?.startedAt ?? null,
       exitCode: state?.exitCode ?? null,
       error: state?.error ?? null,
       logLossy: Boolean(state?.logLossy),
     }
+    // A null cannot satisfy `type: integer`, so absent facts are absent keys.
+    const view = {}
+    for (const [key, value] of Object.entries(raw)) {
+      if (value === null || value === undefined) continue
+      view[key] = value
+    }
+    return view
   }
 
   function stateOf(id) {
@@ -496,6 +584,7 @@ export function apply(ctx) {
       dir: body.dir,
       cmd: body.cmd,
       entry: body.entry,
+      path: body.path,
       sessionId: body.sessionId,
     })
     if (body.start) await start(entry.id)
@@ -605,6 +694,11 @@ export function apply(ctx) {
                 type: 'string',
                 description: 'Static only: the page to open, relative to dir (default index.html).',
               },
+              path: {
+                type: 'string',
+                description:
+                  'What Open should load, as a URL path (e.g. "/app/index.html"). Omit only when the service really serves its root.',
+              },
               start: { type: 'boolean', description: 'register: also start it now (default true).' },
             },
             required: ['action'],
@@ -620,17 +714,13 @@ export function apply(ctx) {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      id: { type: 'string' },
-                      name: { type: 'string' },
-                      kind: { type: 'string' },
-                      status: { type: 'string' },
-                      port: { type: 'integer' },
-                      url: { type: 'string' },
-                      dir: { type: 'string' },
-                      cmd: { type: 'string' },
-                      sessionId: { type: 'string' },
-                      error: { type: 'string' },
-                      log: { type: 'array', items: { type: 'string' } },
+                      ...Object.fromEntries(
+                        Object.entries(FIELD_TYPES).map(([name, type]) => [
+                          name,
+                          { type, description: SERVICE_FIELD_NOTES[name] },
+                        ]),
+                      ),
+                      log: { type: 'array', items: { type: 'string' }, description: 'Recent output (logs action only).' },
                     },
                     required: ['id', 'name', 'kind', 'status', 'port', 'url', 'dir'],
                   },
@@ -646,20 +736,21 @@ export function apply(ctx) {
               return [{ type: 'text', text: rows.length > 0 ? rows.join('\n') : 'no services registered' }]
             },
           },
-          async execute(args) {
+          async execute(args, exec) {
             const action = String(args?.action || 'list')
             if (action === 'list') {
               return { services: entries.map((entry) => ({ ...view(entry) })) }
             }
             if (action === 'register') {
-              const dir = await resolveDir(args, ctx)
+              const dir = await resolveDir(args, exec)
               const entry = await register({
                 name: args.name,
                 kind: args.kind,
                 dir,
                 cmd: args.cmd,
                 entry: args.entry,
-                sessionId: sessionIdOf(args, ctx),
+                path: args.path,
+                sessionId: sessionIdOf(args, exec),
               })
               if (args.start !== false) await start(entry.id)
               return { services: [view(entry)] }
@@ -685,18 +776,19 @@ export function apply(ctx) {
   }
 
   /** Prefer the calling session's directory; a tool call without one must say where. */
-  async function resolveDir(args, context) {
+  async function resolveDir(args, exec) {
     if (args?.dir) return String(args.dir)
-    const agent = context.__agent
+    const sessionId = exec?.agent?.id
     const sessions = ctx.get('sessions')
     const workingDirectory = ctx.get('workingDirectory')
-    const session = agent && typeof sessions?.get === 'function' ? sessions.get(agent.id) : undefined
+    const session = sessionId && typeof sessions?.get === 'function' ? sessions.get(sessionId) : undefined
     const dir = session && workingDirectory ? workingDirectory.get(session) : undefined
     if (dir) return dir
     throw new Error('dir is required when the calling session has no directory')
   }
 
-  function sessionIdOf(args, context) {
-    return String(args?.sessionId || context.__agent?.id || '')
+  /** ToolRunContext carries the calling agent; the registry records who asked. */
+  function sessionIdOf(args, exec) {
+    return String(args?.sessionId || exec?.agent?.id || '')
   }
 }

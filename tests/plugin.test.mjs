@@ -234,9 +234,23 @@ describe('host: registration', () => {
     const harness = makeCtx({ subprocess: makeSubprocess() })
     host.apply(harness.ctx)
     const first = (await create(harness, { kind: 'spawned', dir: home, cmd: 'sleep 1', start: false })).service
-    const second = (await create(harness, { kind: 'spawned', dir: home, cmd: 'sleep 1', start: false })).service
+    // A different command is a different service; the same one would be an update.
+    const second = (await create(harness, { kind: 'spawned', dir: home, cmd: 'sleep 2', start: false })).service
     assert.ok(first.port >= 8840 && first.port <= 8899)
     assert.notEqual(first.port, second.port, 'two services cannot share a port')
+    harness.dispose()
+  })
+
+  it('re-registering the same service updates it instead of taking a second port', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const first = (await create(harness, { kind: 'spawned', dir: home, cmd: 'serve', start: false })).service
+    const again = (await create(harness, { kind: 'spawned', dir: home, cmd: 'serve', path: '/app/index.html', start: false })).service
+    assert.equal(again.id, first.id, 'the same command in the same directory is the same service')
+    assert.equal(again.port, first.port, 'and it keeps its port')
+    assert.equal(again.path, '/app/index.html', 'the new path is applied')
+    const all = readJson(await harness.call('list')).services.filter((service) => service.dir === home && service.cmd === 'serve')
+    assert.equal(all.length, 1, 'no duplicate row')
     harness.dispose()
   })
 
@@ -371,6 +385,44 @@ describe('host: registry', () => {
   })
 })
 
+describe('host: open path', () => {
+  it('opens the registered path instead of guessing the root', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const registered = await harness.tools[0].execute(
+      { action: 'register', kind: 'spawned', dir: home, cmd: 'serve', path: '/the-way-back/index.html', start: false },
+      {},
+    )
+    const service = registered.services[0]
+    assert.equal(service.path, '/the-way-back/index.html')
+    assert.equal(service.url, `http://127.0.0.1:${service.port}/the-way-back/index.html`)
+    harness.dispose()
+  })
+
+  it('refuses a path that could climb out of the service', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const res = await harness.call('create', {
+      method: 'POST',
+      body: { kind: 'spawned', dir: home, cmd: 'serve', path: '/../etc/passwd', start: false },
+    })
+    assert.equal(res.statusCode, 400)
+    assert.match(readJson(res).error, /must not contain/)
+    harness.dispose()
+  })
+
+  it('records the calling session from the tool context', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const registered = await harness.tools[0].execute(
+      { action: 'register', kind: 'spawned', dir: home, cmd: 'serve', start: false },
+      { agent: { id: 'session-abc' } },
+    )
+    assert.equal(registered.services[0].sessionId, 'session-abc')
+    harness.dispose()
+  })
+})
+
 describe('host: tool', () => {
   it('registers through the tool and returns the assigned port', async () => {
     const harness = makeCtx({ subprocess: makeSubprocess() })
@@ -427,6 +479,23 @@ describe('host: tool definition', () => {
     for (const [name, child] of Object.entries(properties)) walk(child, `${path}.properties.${name}`, fail)
     if (node.items) walk(node.items, `${path}.items`, fail)
   }
+
+  it('declares every field it returns, so `serve list` cannot fail on its own output', async () => {
+    // 0.1.2 returned `entry`, `pid`, `startedAt`, … while the schema declared a
+    // subset, and `additionalProperties: false` rejected the tool's own result.
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const tool = harness.tools[0]
+    const declared = Object.keys(tool.output.schema.properties.services.items.properties)
+    await tool.execute({ action: 'register', kind: 'spawned', dir: home, cmd: 'serve', start: false }, {})
+    const view = (await tool.execute({ action: 'list' }, {})).services[0]
+    assert.ok(view, 'the registry has one service')
+    for (const key of Object.keys(view)) {
+      assert.ok(declared.includes(key), `view() returns "${key}", which the schema does not declare`)
+    }
+    assert.equal(view.log, undefined, 'logs come from the logs action, not the list')
+    harness.dispose()
+  })
 
   it('declares JSON Schema, not the parameter-spec dialect', () => {
     const harness = makeCtx({ subprocess: makeSubprocess() })

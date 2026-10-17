@@ -126,3 +126,18 @@ Client 半边按页面加载的方式在 `node:vm` 求值，迷你 hooks 运行�
 `--dsw-alias-label-dimmed` 在 cream 主题里是 `mix(canvas, ink, 0.125)`——12.5% 的墨，对比度约 1.2:1。它是**占位符/骨架**用的，不是正文。把副标题、页脚、空状态都用了它，屏幕上等于没字。
 
 改用 `label-tertiary`（3.76:1，元信息）与 `label-secondary`（5.85:1，正文），并加了一条测试：面板 CSS 里不许出现 `label-dimmed`。
+
+## 11. 打开的是根路径，不是页面（v0.1.3）
+
+登记表里第一件真实的东西是 `kibellah-radio`：`python3 serve.py station --port $PORT`，服务好得很——`/the-way-back/index.html` 返回 200、Range 请求返回 206。但面板上的「打开」打开的是 `http://127.0.0.1:8840/`，那个服务器没有根路由，于是 404。
+
+**根因是模型错了，不是按钮错了。** 一个被托管的服务，"地址"不等于"它的根"。所以：
+
+- 登记项多一个 `path`（URL 路径），`url` = 端口 + path；`Serve` 的 `path` 参数写清楚了"只在它真的服务根路径时才省略"；
+- 面板详情多一行「打开地址」，把按钮会去的完整 URL 写出来——以后再有类似情况，一眼能看出它要去哪。
+
+同时修了两个连带问题：
+
+1. **工具输出被自己的 schema 拒收。** `view()` 返回 `entry`/`pid`/`startedAt` 等字段，而 schema 只声明了子集，`additionalProperties: false` 于是报 `"value.services[0].entry" is not a declared property`——服务起来了，结果吐不出来。现在字段表是**一份数据**（`FIELD_TYPES`），`view()` 和 schema 都从它派生，测试对比两边。
+2. **登记会话永远是空的。** 我编了一个 `context.__agent`，真实字段是 `exec.agent`。所以那条 `kibellah-radio` 的 `sessionId` 是空字符串。
+3. **重复登记会占第二个端口。** 同一个目录同一条命令再登记一次，现在是**更新**（补 `path`、改名字），不是新增。忘了 `path` 的 agent 因此不需要"删掉重来"——那会把一个正在工作的服务杀掉。

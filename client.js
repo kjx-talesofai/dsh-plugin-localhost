@@ -66,6 +66,7 @@ window.__ModuleLoader__.load({
       'action.stop': '停止',
       'action.remove': '移除',
       'action.logs': '日志',
+      'detail.url': '打开地址',
       'detail.dir': '目录',
       'detail.cmd': '启动命令',
       'detail.session': '登记会话',
@@ -98,6 +99,7 @@ window.__ModuleLoader__.load({
       'action.stop': 'Stop',
       'action.remove': 'Remove',
       'action.logs': 'Logs',
+      'detail.url': 'Opens',
       'detail.dir': 'Directory',
       'detail.cmd': 'Command',
       'detail.session': 'Registered by',
@@ -353,6 +355,12 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'lh-detail' },
+        h(
+          'div',
+          { className: 'lh-field' },
+          h('span', { className: 'lh-label' }, t('detail.url')),
+          h('span', { className: 'lh-value lh-mono' }, service.url),
+        ),
         h(
           'div',
           { className: 'lh-field' },

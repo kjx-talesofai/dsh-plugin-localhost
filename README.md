@@ -22,7 +22,7 @@ agent 在开发里起服务是常态：`pnpm dev`、`python -m http.server`、�
 ## 装
 
 ```
-github:kjx-talesofai/dsh-plugin-localhost#v0.1.2
+github:kjx-talesofai/dsh-plugin-localhost#v0.1.3
 ```
 
 装完**重启桌面端**（host 半边只在启动时加载）。
@@ -79,7 +79,7 @@ github:kjx-talesofai/dsh-plugin-localhost#v0.1.2
 ## 开发
 
 ```sh
-npm test    # 27 条，不需要安装任何依赖
+npm test    # 32 条，不需要安装任何依赖
 ```
 
 Host 半边没有运行时依赖，所以测试**真的 import 它**，用假 ctx 驱动：静态服务走真实 socket，spawned 走假 subprocess，断言的是 spawn 规格而不是"看起来跑了"。Client 半边按页面加载的方式在 `node:vm` 里求值，再用一个迷你 hooks 运行时把面板渲染出来断言。
@@ -115,7 +115,7 @@ The panel sits under Tailscale Remote Access: status, name, kind, port, and one 
 ## Development
 
 ```sh
-npm test    # 27 tests, no install step
+npm test    # 32 tests, no install step
 ```
 
 The Host half has no runtime dependencies, so the suite imports it and drives a fake context: the static server over a real socket, the spawned path through a fake `ctx.subprocess`. The Client half is evaluated as a script in `node:vm` and rendered through a small hooks runtime.
