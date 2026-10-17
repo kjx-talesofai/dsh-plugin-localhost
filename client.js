@@ -26,6 +26,22 @@ window.__ModuleLoader__.load({
     const React = require('react')
 
     const h = React.createElement
+
+    /**
+     * The shared primitive table, when the loader provides it.
+     *
+     * `StateDot` is the dot the rest of the shell draws — the Tailscale row's
+     * green dot is `StateDot({ state: 'done', size: 8 })`. Hand-rolling an 8px
+     * circle got the size visibly wrong, so this asks for the real component and
+     * falls back to a plain dot only if the table is unavailable.
+     */
+    let primitives = null
+    try {
+      primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    } catch {
+      primitives = null
+    }
+    const StateDot = typeof primitives?.StateDot === 'function' ? primitives.StateDot : null
     const { useCallback, useEffect, useMemo, useRef, useState } = React
 
     /** Panel id: shared by the sidebar row and the `main` panel key. */
@@ -152,7 +168,8 @@ window.__ModuleLoader__.load({
 .lh-err{color:var(--dsw-alias-state-error-primary);font-size:12px;padding:0 20px 8px}
 .lh-empty{padding:56px 24px;text-align:center;color:var(--dsw-alias-label-secondary);line-height:1.9}
 .lh-empty b{display:block;color:var(--dsw-alias-label-primary);font-weight:500;margin-bottom:4px;font-size:13px}
-.lh-navdot{position:absolute;right:-4px;bottom:-3px;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
+.lh-navdot-slot{position:absolute;right:-4px;bottom:-3px;line-height:0;display:inline-flex}
+.lh-navdot{display:block;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
 .lh-foot{padding:10px 20px 14px;color:var(--dsw-alias-label-tertiary);font-size:11.5px;border-top:1px solid var(--dsw-alias-border-l4)}
 `
 
@@ -458,7 +475,13 @@ window.__ModuleLoader__.load({
         { style: { position: 'relative', display: 'inline-flex', alignItems: 'center' } },
         h(Icon, { size }),
         running > 0
-          ? h('span', { className: 'lh-navdot', 'aria-label': String(running) })
+          ? h(
+              'span',
+              { className: 'lh-navdot-slot', 'aria-label': String(running) },
+              StateDot !== null
+                ? h(StateDot, { state: 'done', size: 8 })
+                : h('span', { className: 'lh-navdot' }),
+            )
           : null,
       )
     }

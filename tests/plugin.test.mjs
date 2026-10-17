@@ -799,19 +799,19 @@ describe('client: nav row', () => {
     const tree = await mountIcon([
       { id: 'a', name: 'radio', kind: 'spawned', dir: '/tmp/a', cmd: 'serve', port: 8840, status: 'running', url: 'http://127.0.0.1:8840/', sessionId: '' },
     ])
-    assert.equal(countClass(tree, 'lh-navdot'), 1)
+    assert.equal(countClass(tree, 'lh-navdot-slot'), 1)
   })
 
   it('shows nothing when every service is stopped', async () => {
     const tree = await mountIcon([
       { id: 'a', name: 'radio', kind: 'spawned', dir: '/tmp/a', cmd: 'serve', port: 8840, status: 'stopped', url: 'http://127.0.0.1:8840/', sessionId: '' },
     ])
-    assert.equal(countClass(tree, 'lh-navdot'), 0)
+    assert.equal(countClass(tree, 'lh-navdot-slot'), 0)
   })
 
   it('does not put the dot up when the registry is empty', async () => {
     const tree = await mountIcon([])
-    assert.equal(countClass(tree, 'lh-navdot'), 0)
+    assert.equal(countClass(tree, 'lh-navdot-slot'), 0)
   })
 })
 

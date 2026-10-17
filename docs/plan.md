@@ -183,3 +183,17 @@ palette 里写的是 `const inject = ['slots','locale','sessions','uiWorkspace',
 侧边栏那一行是常驻的，面板不是。所以"有没有服务在跑"不能只回答在面板里——那需要先点进去。Tailscale 那行已经用右下角小圆点回答"在不在线"，这里照抄同一个位置和尺寸（`right:-4 bottom:-3`，8px，`state-success-primary`）。
 
 代价是**第二个轮询**：图标 10s 一次，面板 2.5s 一次。都用同一个 `fetchServices()`。没有做跨组件订阅——一个导航点晚 10 秒亮起来不值得一套 store。
+
+## 15. 别手搓 shell 的零件（v0.2.3）
+
+导航行那个点，第一版是手写的 `8px` 圆。截图一比就露馅：Tailscale 的点看起来只有它的一半。
+
+原因是那两个数不是一回事：`StateDot({ size: 8 })` 画进去的圆比 8 小（它那个 `size` 是盒子，不是圆心）。手写一个"看起来 8px"的圆，永远对不上。
+
+改成直接问 primitives 要同一个组件：
+
+```js
+const StateDot = primitives?.StateDot   // state:'done', size:8 —— 和 Tailscale 那行同源
+```
+
+拿不到就退回一个 6px 的圆（测试走的就是这条兜底路径）。**能复用 shell 自己的零件就不要自己画**，尤其是尺寸这种"看一眼就觉得不对、又说不出差在哪"的东西。

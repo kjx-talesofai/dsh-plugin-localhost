@@ -22,7 +22,7 @@ agent 在开发里起服务是常态：`pnpm dev`、`python -m http.server`、�
 ## 装
 
 ```
-github:kjx-talesofai/dsh-plugin-localhost#v0.2.2
+github:kjx-talesofai/dsh-plugin-localhost#v0.2.3
 ```
 
 装完**重启桌面端**（host 半边只在启动时加载）。
