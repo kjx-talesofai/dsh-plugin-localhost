@@ -9,5 +9,11 @@
 # preference — it lives in `~/.dsh/localhost/services.json`, written by the
 # Host half. Preferences that belong to the user belong in a config schema; a
 # list of machines' ports does not.
-- id: localhost
-  name: dsh-plugin-localhost
+#
+# `insert:` is not decoration. A bare top-level row is a *patch* against an
+# existing entry, and a patch for an id that does not exist yet inserts nothing —
+# the profile reports it as an override and the plugin never mounts. The shape is
+# asserted in tests/plugin.test.mjs so this cannot regress silently again.
+- insert:
+    - id: localhost
+      name: 'dsh-plugin-localhost'

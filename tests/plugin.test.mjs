@@ -164,6 +164,27 @@ const readJson = (res) => JSON.parse(res.body)
 const create = (harness, body) => harness.call('create', { method: 'POST', body }).then(readJson)
 const listIds = (harness) => harness.call('list').then((res) => readJson(res).services.map((service) => service.id))
 
+describe('bundle: patch shape', () => {
+  // A bare top-level row is a *patch* against an existing entry. For an id that
+  // does not exist yet it inserts nothing: the profile records an override and
+  // the plugin silently never mounts. That is exactly how 0.1.0 shipped.
+  it('inserts the row instead of patching a row that does not exist', () => {
+    const patch = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'cordis.patch.yml'), 'utf8')
+    assert.match(patch, /^- insert:/m, "the bundle layer must use `insert:`")
+    assert.match(patch, /^ {4}- id: localhost$/m, 'the row id is the one the client and the registry use')
+    assert.match(patch, /^ {6}name: 'dsh-plugin-localhost'$/m, 'the row name is the package name')
+    const rowCount = patch.split('\n').filter((line) => /^- id:/.test(line)).length
+    assert.equal(rowCount, 0, 'a bare top-level row would be an override, not an insert')
+  })
+
+  it('keeps the package name the loader resolves equal to the row name', () => {
+    const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
+    assert.equal(pkg.name, 'dsh-plugin-localhost')
+    assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
+    assert.equal(pkg.dsh.client.platform, 'web', 'the browser half needs a platform to be served')
+  })
+})
+
 describe('host: registration', () => {
   it('mounts the tool and every route the panel uses', () => {
     const harness = makeCtx({ subprocess: makeSubprocess() })
