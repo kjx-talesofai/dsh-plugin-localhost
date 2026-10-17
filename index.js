@@ -660,7 +660,7 @@ export function apply(ctx) {
         tool.register({
           name: 'serve',
           description:
-            'Register, start, stop and read the local servers and static pages an agent started. Use this INSTEAD of starting a dev server with bash: it assigns the port, records the directory and the session, and the panel can stop it. A server started with bash is invisible to the panel and survives the session.',
+            'Register, start, stop and read the local servers and static pages an agent started. Use this INSTEAD of starting a dev server with bash: it assigns the port, records the directory and the session, and the panel can stop it. A server started with bash is invisible to the panel and survives the session. The panel reads the same registry directly, so what the panel lists does not depend on this tool call succeeding. Open loads url, which is the port plus the registered path.',
           // `ctx.tools.register` takes a finished ToolDefinition, so `parameters`
           // and `output.schema` are real JSON Schema — not the parameter-spec
           // dialect `defineTool()` accepts. A per-property `required: true` is the
