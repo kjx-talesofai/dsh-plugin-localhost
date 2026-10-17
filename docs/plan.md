@@ -94,3 +94,35 @@ Client 半边按页面加载的方式在 `node:vm` 求值，迷你 hooks 运行�
 - tailnet 地址一列（和 tailscale 插件联动）
 - `dsh localhost` CLI（给脚本和人类，和工具共用登记表）
 - 自动重启上次在跑的（要用户显式打开，默认关）
+
+
+## 10. 两次自己撞的墙（v0.1.2）
+
+两件事都是"能测却没测"的典型，记下来，因为它们的形状会重复。
+
+### 10.1 补丁少了一层 `insert:`
+
+`cordis.patch.yml` 里写
+
+```yaml
+- id: localhost
+  name: dsh-plugin-localhost
+```
+
+在 Loader 的批量方言里这是**补丁**（对已存在条目的覆盖），不是新增。id 还不存在就没有东西可补，profile 于是记成 `overrides: ["localhost"]`，bundle 组合出零行。表现是：插件装了、`package.json` 里有、`node_modules` 里也在，**但什么都没发生**——没有面板，没有工具。
+
+诊断靠 `list_bundles` 的两个字段：`rows` 为空而 `overrides` 里有它。
+
+### 10.2 工具定义写成了"参数规格"方言
+
+`ctx.tools.register()` 收的是**成品 ToolDefinition**：`parameters` 与 `output.schema` 都是 JSON Schema。而 `defineTool()`（官方工具包用的那个）收的是另一种"参数规格"方言——`required: true` 写在字段里，由它转换成 JSON Schema。
+
+我把规格方言直接交给了 `register`，`assertSupportedJsonSchema` 抛错。Cordis 的 fiber 失败会**回滚整个 apply**，于是先注册的路由一起被撤掉。表现是：面板能渲染（客户端半边独立），但数据请求 404。
+
+这两条现在都有测试守着：补丁形状（`- insert:`、无裸行）、工具定义（只允许支持的 JSON Schema 关键词、`required` 必须是数组）。
+
+### 10.3 还有一条：文字淡到看不见
+
+`--dsw-alias-label-dimmed` 在 cream 主题里是 `mix(canvas, ink, 0.125)`——12.5% 的墨，对比度约 1.2:1。它是**占位符/骨架**用的，不是正文。把副标题、页脚、空状态都用了它，屏幕上等于没字。
+
+改用 `label-tertiary`（3.76:1，元信息）与 `label-secondary`（5.85:1，正文），并加了一条测试：面板 CSS 里不许出现 `label-dimmed`。

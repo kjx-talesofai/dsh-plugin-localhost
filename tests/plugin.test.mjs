@@ -409,6 +409,39 @@ describe('host: tool', () => {
   })
 })
 
+describe('host: tool definition', () => {
+  // `ctx.tools.register` takes a finished ToolDefinition: `parameters` and
+  // `output.schema` are real JSON Schema. The parameter-*spec* dialect (a boolean
+  // `required` inside a property) belongs to `defineTool()`, and 0.1.1 passed it
+  // straight to the registry — `assertSupportedJsonSchema` threw, the fiber rolled
+  // back, and the routes went with it. That is the 404 the panel showed.
+  const SUPPORTED = new Set(['type', 'properties', 'required', 'items', 'enum', 'description', 'additionalProperties', 'oneOf', 'title', 'default', 'examples', 'const'])
+
+  function walk(node, path, fail) {
+    if (node === null || typeof node !== 'object') return
+    for (const [key, value] of Object.entries(node)) {
+      if (!SUPPORTED.has(key)) fail(`${path}.${key} is not a supported keyword`)
+      if (key === 'required' && !Array.isArray(value)) fail(`${path}.required must be an array, not ${typeof value}`)
+    }
+    const properties = node.properties ?? {}
+    for (const [name, child] of Object.entries(properties)) walk(child, `${path}.properties.${name}`, fail)
+    if (node.items) walk(node.items, `${path}.items`, fail)
+  }
+
+  it('declares JSON Schema, not the parameter-spec dialect', () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const tool = harness.tools[0]
+    const failures = []
+    assert.equal(tool.parameters.type, 'object')
+    assert.deepEqual(tool.parameters.required, ['action'], 'the object-level required list names action')
+    walk(tool.parameters, 'parameters', (message) => failures.push(message))
+    walk(tool.output.schema, 'output', (message) => failures.push(message))
+    assert.deepEqual(failures, [])
+    harness.dispose()
+  })
+})
+
 // ---------------------------------------------------------------------------
 // client half
 
@@ -579,6 +612,18 @@ function makeLocale() {
     },
   }
 }
+
+describe('client: styles', () => {
+  // The cream theme derives `label-dimmed` as 12.5% ink on the canvas — roughly
+  // 1.2:1. It is a placeholder/hairline token, not text. 0.1.1 used it for the
+  // subtitle, footer and empty state, which read as invisible.
+  it('never paints readable text with the placeholder token', () => {
+    const css = CLIENT_SOURCE.slice(CLIENT_SOURCE.indexOf('const CSS ='))
+    assert.equal(/label-dimmed/.test(css), false, 'use label-tertiary / label-secondary for text instead')
+    assert.match(css, /label-tertiary/, 'secondary metadata uses the readable tertiary token')
+    assert.match(css, /label-secondary/, 'body copy uses the secondary text token')
+  })
+})
 
 describe('client: bundle', () => {
   it('loads as a script and exports apply with its inject list', () => {

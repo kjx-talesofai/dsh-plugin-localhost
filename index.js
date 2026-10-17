@@ -572,42 +572,42 @@ export function apply(ctx) {
           name: 'serve',
           description:
             'Register, start, stop and read the local servers and static pages an agent started. Use this INSTEAD of starting a dev server with bash: it assigns the port, records the directory and the session, and the panel can stop it. A server started with bash is invisible to the panel and survives the session.',
+          // `ctx.tools.register` takes a finished ToolDefinition, so `parameters`
+          // and `output.schema` are real JSON Schema — not the parameter-spec
+          // dialect `defineTool()` accepts. A per-property `required: true` is the
+          // spec dialect and `assertSupportedJsonSchema` rejects it, which is what
+          // took the whole fiber down (and the routes with it) in 0.1.1.
           parameters: {
-            action: {
-              type: 'string',
-              required: true,
-              enum: ['list', 'register', 'start', 'stop', 'logs'],
-              description: 'What to do.',
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              action: {
+                type: 'string',
+                enum: ['list', 'register', 'start', 'stop', 'logs'],
+                description: 'What to do.',
+              },
+              id: { type: 'string', description: 'Service id (needed by start/stop/logs).' },
+              name: { type: 'string', description: 'Short name shown in the panel (register).' },
+              kind: {
+                type: 'string',
+                enum: ['spawned', 'static'],
+                description: 'spawned = a command this Host starts and stops; static = a directory served as-is.',
+              },
+              dir: {
+                type: 'string',
+                description: 'Absolute directory: the working directory of the command, or the root of the static page.',
+              },
+              cmd: {
+                type: 'string',
+                description: 'Start command for a spawned service. Use $PORT (or $LOCALHOST_PORT) instead of a literal port — this tool assigns one.',
+              },
+              entry: {
+                type: 'string',
+                description: 'Static only: the page to open, relative to dir (default index.html).',
+              },
+              start: { type: 'boolean', description: 'register: also start it now (default true).' },
             },
-            id: {
-              type: 'string',
-              description: 'Service id (needed by start/stop/logs).',
-            },
-            name: {
-              type: 'string',
-              description: 'Short name shown in the panel (register).',
-            },
-            kind: {
-              type: 'string',
-              enum: ['spawned', 'static'],
-              description: 'spawned = a command this Host starts and stops; static = a directory served as-is.',
-            },
-            dir: {
-              type: 'string',
-              description: 'Absolute directory: the working directory of the command, or the root of the static page.',
-            },
-            cmd: {
-              type: 'string',
-              description: 'Start command for a spawned service. Use $PORT (or $LOCALHOST_PORT) instead of a literal port — this tool assigns one.',
-            },
-            entry: {
-              type: 'string',
-              description: 'Static only: the page to open, relative to dir (default index.html).',
-            },
-            start: {
-              type: 'boolean',
-              description: 'register: also start it now (default true).',
-            },
+            required: ['action'],
           },
           output: {
             schema: {
@@ -616,26 +616,27 @@ export function apply(ctx) {
               properties: {
                 services: {
                   type: 'array',
-                  required: true,
                   items: {
                     type: 'object',
                     additionalProperties: false,
                     properties: {
-                      id: { type: 'string', required: true },
-                      name: { type: 'string', required: true },
-                      kind: { type: 'string', required: true },
-                      status: { type: 'string', required: true },
-                      port: { type: 'integer', required: true },
-                      url: { type: 'string', required: true },
-                      dir: { type: 'string', required: true },
+                      id: { type: 'string' },
+                      name: { type: 'string' },
+                      kind: { type: 'string' },
+                      status: { type: 'string' },
+                      port: { type: 'integer' },
+                      url: { type: 'string' },
+                      dir: { type: 'string' },
                       cmd: { type: 'string' },
                       sessionId: { type: 'string' },
                       error: { type: 'string' },
                       log: { type: 'array', items: { type: 'string' } },
                     },
+                    required: ['id', 'name', 'kind', 'status', 'port', 'url', 'dir'],
                   },
                 },
               },
+              required: ['services'],
             },
             render: (_args, value) => {
               const rows = (value?.services ?? []).map((service) => {
