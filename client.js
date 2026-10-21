@@ -56,6 +56,7 @@ window.__ModuleLoader__.load({
       start: '/api/localhost.start',
       stop: '/api/localhost.stop',
       remove: '/api/localhost.remove',
+      autostart: '/api/localhost.autostart',
       logs: '/api/localhost.logs',
       reveal: '/api/localhost.reveal',
     }
@@ -71,7 +72,7 @@ window.__ModuleLoader__.load({
       'panel.empty.title': '还没有登记任何东西',
       'panel.empty.body': '让 agent 用 serve 注册一个目录或一条启动命令。',
       'panel.count': '{running} 个在跑 / 共 {total} 个',
-      'panel.footer': '关掉 DSH，它们一起关；重启后全部显示为已停止。',
+      'panel.footer': '关掉 DSH，它们一起关；标了「自动启动」的会在下次启动时自己起来。',
       'kind.spawned': '命令',
       'kind.static': '静态',
       'status.running': '运行中',
@@ -82,6 +83,10 @@ window.__ModuleLoader__.load({
       'action.start': '启动',
       'action.stop': '停止',
       'action.remove': '移除',
+      'action.removeConfirm': '确认移除',
+      'action.removeHint': '从登记表里删掉，并停掉它',
+      'action.autoStart': '自动启动',
+      'action.autoStartHint': '下次启动 DSH 时自己起来',
       'action.logs': '日志',
       'detail.url': '打开地址',
       'detail.dir': '目录',
@@ -98,6 +103,7 @@ window.__ModuleLoader__.load({
       'error.action': '操作失败：',
       'busy.start': '正在启动…',
       'busy.stop': '正在停止…',
+      'busy.autoStart': '保存中…',
     }
     const en = {
       'panel.title': 'Localhost',
@@ -106,7 +112,7 @@ window.__ModuleLoader__.load({
       'panel.empty.title': 'Nothing registered yet',
       'panel.empty.body': 'Ask the agent to serve a directory or a start command.',
       'panel.count': '{running} running / {total} total',
-      'panel.footer': 'They stop with DSH, and every one reads stopped after a restart.',
+      'panel.footer': 'They stop with DSH; the ones marked auto-start come back on launch.',
       'kind.spawned': 'command',
       'kind.static': 'static',
       'status.running': 'running',
@@ -117,6 +123,10 @@ window.__ModuleLoader__.load({
       'action.start': 'Start',
       'action.stop': 'Stop',
       'action.remove': 'Remove',
+      'action.removeConfirm': 'Remove?',
+      'action.removeHint': 'Delete the row and stop it',
+      'action.autoStart': 'Auto-start',
+      'action.autoStartHint': 'Start when DSH launches',
       'action.logs': 'Logs',
       'detail.url': 'Opens',
       'detail.dir': 'Directory',
@@ -133,6 +143,7 @@ window.__ModuleLoader__.load({
       'error.action': 'Failed: ',
       'busy.start': 'Starting…',
       'busy.stop': 'Stopping…',
+      'busy.autoStart': 'Saving…',
     }
 
     const CSS = `
@@ -160,6 +171,9 @@ window.__ModuleLoader__.load({
 .lh-btn{border:1px solid var(--dsw-alias-border-l4);background:none;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;padding:3px 9px;border-radius:6px;cursor:pointer}
 .lh-btn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2)}
 .lh-btn:disabled{opacity:.5;cursor:default}
+.lh-auto.on{color:var(--dsw-alias-state-success-primary);border-color:currentColor}
+.lh-danger{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
+.lh-detail-foot{display:flex;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l4)}
 .lh-detail{display:grid;gap:6px;padding-top:9px;border-top:1px solid var(--dsw-alias-border-l4)}
 .lh-field{display:grid;grid-template-columns:74px 1fr;gap:8px;align-items:baseline;min-width:0}
 .lh-label{color:var(--dsw-alias-label-tertiary);font-size:11px}
@@ -210,6 +224,7 @@ window.__ModuleLoader__.load({
       const [services, setServices] = useState([])
       const [error, setError] = useState(null)
       const [expanded, setExpanded] = useState(null)
+      const [confirming, setConfirming] = useState(null)
       const [logs, setLogs] = useState([])
       const [lossy, setLossy] = useState(false)
       const [busy, setBusy] = useState(null)
@@ -261,19 +276,22 @@ window.__ModuleLoader__.load({
       }, [expanded])
 
       const act = useCallback(
-        async (url, id, label) => {
-          setBusy({ id, label })
+        async (url, payload, label) => {
+          setBusy({ id: payload.id, label })
+          setConfirming(null)
           setError(null)
           try {
             const response = await fetch(url, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ id }),
+              body: JSON.stringify(payload),
             })
             if (!response.ok) {
               const body = await response.json().catch(() => ({}))
               throw new Error(body?.error || `HTTP ${response.status}`)
             }
+            // A removed row cannot stay open: the panel's next read will not have it.
+            if (url === API.remove) setExpanded(null)
             await refresh()
           } catch (failure) {
             setError(String(failure?.message ?? failure))
@@ -335,9 +353,21 @@ window.__ModuleLoader__.load({
                   expanded: expanded === service.id,
                   logs: expanded === service.id ? logs : [],
                   lossy: expanded === service.id ? lossy : false,
-                  onToggle: () => setExpanded(expanded === service.id ? null : service.id),
-                  onStart: () => act(API.start, service.id, t('busy.start')),
-                  onStop: () => act(API.stop, service.id, t('busy.stop')),
+                  onToggle: () => {
+                    setExpanded(expanded === service.id ? null : service.id)
+                    setConfirming(null)
+                  },
+                  onStart: () => act(API.start, { id: service.id }, t('busy.start')),
+                  onStop: () => act(API.stop, { id: service.id }, t('busy.stop')),
+                  onAutoStart: () =>
+                    act(API.autostart, { id: service.id, autoStart: !service.autoStart }, t('busy.autoStart')),
+                  confirming: confirming === service.id,
+                  onRemove: () => {
+                    // Two clicks: the first asks, the second does it. A row is
+                    // cheap to re-register but expensive to lose by accident.
+                    if (confirming !== service.id) return setConfirming(service.id)
+                    return act(API.remove, { id: service.id }, t('busy.stop'))
+                  },
                   onReveal: (target) => reveal(service.id, target),
                   remote,
                   onOpen: () => {
@@ -402,6 +432,20 @@ window.__ModuleLoader__.load({
           started
             ? h('button', { className: 'lh-btn', type: 'button', disabled: Boolean(busy), onClick: props.onStop }, t('action.stop'))
             : h('button', { className: 'lh-btn', type: 'button', disabled: Boolean(busy), onClick: props.onStart }, t('action.start')),
+          // The dot says "on" without a tooltip, and the button is the only
+          // control in this panel that changes how the next launch behaves.
+          h(
+            'button',
+            {
+              className: `lh-btn lh-auto${service.autoStart ? ' on' : ''}`,
+              type: 'button',
+              title: t('action.autoStartHint'),
+              'aria-pressed': service.autoStart ? 'true' : 'false',
+              disabled: Boolean(busy),
+              onClick: props.onAutoStart,
+            },
+            `${service.autoStart ? '●' : '○'} ${t('action.autoStart')}`,
+          ),
           h('span', { className: 'lh-spacer' }),
           h('button', { className: 'lh-btn', type: 'button', onClick: props.onToggle }, expanded ? '▲' : '▼'),
         ),
@@ -495,6 +539,21 @@ window.__ModuleLoader__.load({
                 : logs.map((line, index) => h('div', { key: index, className: 'lh-logline' }, line)),
             ),
             lossy ? h('div', { className: 'lh-note' }, t('detail.logsLossy')) : null,
+          ),
+        ),
+        h(
+          'div',
+          { className: 'lh-detail-foot' },
+          h(
+            'button',
+            {
+              className: `lh-btn${props.confirming ? ' lh-danger' : ''}`,
+              type: 'button',
+              title: t('action.removeHint'),
+              disabled: Boolean(props.busy),
+              onClick: props.onRemove,
+            },
+            props.confirming ? t('action.removeConfirm') : t('action.remove'),
           ),
         ),
       )

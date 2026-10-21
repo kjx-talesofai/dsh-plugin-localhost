@@ -18,7 +18,14 @@
  * The registry is data, not a preference: it lives in
  * `~/.dsh/localhost/services.json`, not in the plugin's Config. Definitions
  * survive a restart; runtime state (pid, log tail, exit code) never does, and
- * nothing starts automatically — a restart shows everything stopped.
+ * a restart shows everything stopped unless the entry opted into `autoStart`.
+ *
+ * The file is the truth and memory is its cache. An edit made on disk — a row
+ * deleted with an editor, a port fixed by hand — is mirrored on the next read.
+ * Before 0.4.0 memory won: a row deleted on disk stayed in the panel, and the
+ * next `save()` wrote it back, so the only way out was restarting the app. The
+ * real reason that happened is in `docs/plan.md` §17: there was no supported
+ * way to delete a row, so an agent deleted it in the file instead.
  *
  * @module dsh-plugin-localhost
  */
@@ -114,23 +121,76 @@ export const inject = ['webServer', 'connection']
  */
 export function apply(ctx) {
   /** @type {Array<object>} persisted definitions, in panel order */
-  let entries = load()
+  let entries = []
   /** @type {Map<string, object>} runtime state, never persisted */
   const runtime = new Map()
+  /** Identity of the registry file `entries` mirrors, so an external edit is not missed. */
+  let stamp = ''
 
   const subprocess = () => ctx.get('subprocess')
   const tools = () => ctx.get('tools')
 
   // ---------------------------------------------------------------- persistence
 
-  function load() {
+  function stampOf() {
     try {
-      const parsed = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8'))
-      if (!Array.isArray(parsed?.services)) return []
+      const info = statSync(REGISTRY_PATH)
+      return `${info.mtimeMs}:${info.size}`
+    } catch {
+      return 'missing'
+    }
+  }
+
+  /** The file's rows, `[]` when there is no file, `null` when it cannot be read. */
+  function readFileRegistry() {
+    let text
+    try {
+      text = readFileSync(REGISTRY_PATH, 'utf8')
+    } catch (error) {
+      // No file yet is an empty registry. Anything else (permissions, a
+      // directory in the way) is a read we must not turn into "no services".
+      return error?.code === 'ENOENT' ? [] : null
+    }
+    try {
+      const parsed = JSON.parse(text)
+      if (!Array.isArray(parsed?.services)) return null
       return parsed.services.filter((entry) => entry && typeof entry.id === 'string' && typeof entry.dir === 'string')
     } catch {
-      return []
+      // Half-written by an editor, or not a registry at all: keep what we have
+      // and try again on the next read rather than dropping every row.
+      return null
     }
+  }
+
+  /**
+   * Mirror the file into memory.
+   *
+   * A row that left the file stops the thing it owned, exactly like `remove`,
+   * and a row whose port or command changed while it was running is stopped so
+   * the panel cannot report a port that is no longer the one being served.
+   */
+  function sync() {
+    const now = stampOf()
+    if (now === stamp) return
+    const next = readFileRegistry()
+    if (next === null) return
+    stamp = now
+    const kept = new Map(next.map((entry) => [entry.id, entry]))
+    for (const previous of entries) {
+      const current = kept.get(previous.id)
+      if (!current) {
+        // Stop first: shutdown reads the runtime state this row still has.
+        shutdown(previous).finally(() => runtime.delete(previous.id)).catch(() => {})
+        continue
+      }
+      const sameShape =
+        current.kind === previous.kind &&
+        current.dir === previous.dir &&
+        current.cmd === previous.cmd &&
+        current.port === previous.port
+      if (!sameShape) shutdown(previous).catch(() => {})
+    }
+    entries = next
   }
 
   function save() {
@@ -139,10 +199,14 @@ export function apply(ctx) {
       const tmp = `${REGISTRY_PATH}.tmp`
       writeFileSync(tmp, `${JSON.stringify({ version: 1, services: entries }, null, 2)}\n`)
       renameSync(tmp, REGISTRY_PATH)
+      stamp = stampOf()
     } catch (error) {
       console.warn(`localhost: could not write the registry: ${error?.message ?? error}`)
     }
   }
+
+  entries = readFileRegistry() ?? []
+  stamp = stampOf()
 
   // ---------------------------------------------------------------- ports
 
@@ -183,6 +247,9 @@ export function apply(ctx) {
       path: normalizePath(definition.path),
       port: 0,
       sessionId: definition.sessionId ? String(definition.sessionId) : '',
+      // Stored as a boolean; `register` still knows whether the caller mentioned
+      // the field, which is what decides whether an update clears it.
+      autoStart: definition.autoStart === true,
       createdAt: Date.now(),
     }
     return entry
@@ -206,6 +273,8 @@ export function apply(ctx) {
         path: entry.path || already.path,
         entry: entry.entry || already.entry,
         sessionId: entry.sessionId || already.sessionId,
+        // Omitting the field leaves the opt-in alone; passing it sets it.
+        autoStart: definition.autoStart === undefined ? already.autoStart === true : entry.autoStart,
       }
       entries = entries.map((candidate) => (candidate.id === already.id ? merged : candidate))
       save()
@@ -289,6 +358,7 @@ export function apply(ctx) {
     exitCode: 'integer',
     error: 'string',
     logLossy: 'boolean',
+    autoStart: 'boolean',
     createdAt: 'integer',
   }
 
@@ -311,6 +381,7 @@ export function apply(ctx) {
     exitCode: 'Last exit code, when the process exited.',
     error: 'Why it is not running, when there is a reason.',
     logLossy: 'True when old output was dropped from the kept tail.',
+    autoStart: 'Starts with DSH when true; set it on register.',
     createdAt: 'Epoch ms of registration.',
   }
 
@@ -344,6 +415,7 @@ export function apply(ctx) {
       exitCode: state?.exitCode ?? null,
       error: state?.error ?? null,
       logLossy: Boolean(state?.logLossy),
+      autoStart: entry.autoStart === true,
     }
     // A null cannot satisfy `type: integer`, so absent facts are absent keys.
     const view = {}
@@ -504,23 +576,39 @@ export function apply(ctx) {
     if (!entry) throw new Error('no such service')
     const state = stateOf(id)
     if (state.status === 'running' || state.status === 'starting') return view(entry)
-    if (entry.kind === 'static') await serveStatic(entry, state)
-    else await spawnEntry(entry, state)
+    try {
+      // Unregistering a directory is how a static page disappears; binding its
+      // port anyway would answer 404 for a page that reads as registered.
+      if (entry.kind === 'static' && !existsSync(entry.dir)) throw new Error(`directory does not exist: ${entry.dir}`)
+      if (entry.kind === 'static') await serveStatic(entry, state)
+      else await spawnEntry(entry, state)
+    } catch (error) {
+      // A failed start is a row that says why, not one that silently reads
+      // "stopped" again — autoStart in particular has nobody to tell.
+      state.status = 'exited'
+      state.error = String(error?.message ?? error)
+      throw error
+    }
     // A failure to bind must not leave the panel claiming a service it never reached.
     save()
     return view(entry)
   }
 
-  async function stop(id) {
-    const entry = entries.find((candidate) => candidate.id === id)
-    if (!entry) throw new Error('no such service')
-    const state = stateOf(id)
+  /** Release what an entry owns. Never touches `entries` or the file. */
+  async function shutdown(entry) {
+    const state = runtime.get(entry.id)
+    if (!state) return
     state.status = 'stopped'
     state.error = null
     state.startedAt = null
     if (state.server) {
-      await new Promise((done) => state.server.close(() => done(undefined)))
+      const server = state.server
       state.server = null
+      const closed = new Promise((done) => server.close(() => done(undefined)))
+      // A keep-alive socket that is already open would answer one more request
+      // after the row reads "stopped"; dropping the idle ones makes the word true.
+      if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections()
+      await closed
     }
     if (state.handle) {
       const handle = state.handle
@@ -530,21 +618,70 @@ export function apply(ctx) {
         await handle.waitForExit()
       } catch {}
     }
+  }
+
+  async function stop(id) {
+    const entry = entries.find((candidate) => candidate.id === id)
+    if (!entry) throw new Error('no such service')
+    await shutdown(entry)
     return view(entry)
   }
 
   async function remove(id) {
-    await stop(id)
-    entries = entries.filter((entry) => entry.id !== id)
+    const entry = entries.find((candidate) => candidate.id === id)
+    // Removing twice is the same wish; saying "no such service" for the second
+    // click of a confirm button is a worse answer than being done already.
+    if (!entry) return { removed: id }
+    await shutdown(entry)
+    entries = entries.filter((candidate) => candidate.id !== id)
     runtime.delete(id)
     save()
     return { removed: id }
   }
 
+  /** The opt-in behind `autoStart`, editable while the service is running. */
+  function setAutoStart(id, on) {
+    const entry = entries.find((candidate) => candidate.id === id)
+    if (!entry) throw new Error('no such service')
+    entry.autoStart = on === true
+    save()
+    return view(entry)
+  }
+
   // ---------------------------------------------------------------- the tick
+
+  /**
+   * Start the entries the user marked `autoStart`.
+   *
+   * Runs after the composition is up, not inside `apply`: this plugin does not
+   * inject the subprocess service (static entries never need it), so the seam
+   * may mount after us. The tick that already reads readiness is the natural
+   * place to notice it, and the pass runs exactly once either way.
+   *
+   * A failure stays on the row — port taken, directory gone, command missing —
+   * and is never thrown: a server that did not start must not take the
+   * composition down with it.
+   */
+  let booted = false
+  async function boot() {
+    if (booted) return
+    const wanted = entries.filter((entry) => entry.autoStart)
+    if (wanted.length === 0) {
+      booted = true
+      return
+    }
+    if (wanted.some((entry) => entry.kind === 'spawned') && !subprocess()) return
+    booted = true
+    for (const entry of wanted) {
+      try {
+        await start(entry.id)
+      } catch {}
+    }
+  }
 
   let ticking = null
   function tick() {
+    void boot()
     for (const entry of entries) {
       const state = runtime.get(entry.id)
       if (!state) continue
@@ -647,6 +784,10 @@ export function apply(ctx) {
           handler: async (req, res) => {
             const rejection = admitted(req)
             if (rejection !== null) return reject(res, rejection)
+            // The file may have changed under us (an editor, another process);
+            // every route reads the registry as it is now, not as it was at
+            // mount time.
+            sync()
             if (method && req.method !== method) return sendJson(res, 405, { error: 'method-not-allowed' })
             try {
               await handler(req, res)
@@ -674,6 +815,7 @@ export function apply(ctx) {
       entry: body.entry,
       path: body.path,
       sessionId: body.sessionId,
+      autoStart: body.autoStart,
     })
     if (body.start) await start(entry.id)
     sendJson(res, 200, { service: view(entry) })
@@ -692,6 +834,11 @@ export function apply(ctx) {
   route('remove', async (req, res) => {
     const body = await readBody(req)
     sendJson(res, 200, await remove(String(body.id)))
+  }, 'POST')
+
+  route('autostart', async (req, res) => {
+    const body = await readBody(req)
+    sendJson(res, 200, { service: setAutoStart(String(body.id), body.autoStart === true) })
   }, 'POST')
 
   route('logs', async (req, res) => {
@@ -751,22 +898,23 @@ export function apply(ctx) {
           // every agent's list on every request, so it says what it does, what
           // the port rules are, and stops. docs/plan.md §12 records the numbers.
           description:
-            'Register, start, stop and read a local server or static page instead of starting it with bash. The port is assigned here (use $PORT in cmd) and the service stops with DSH. Open loads url, which is the port plus path.',
+            'Register, start, stop, remove or read a local server or static page instead of using bash. Ports are assigned here (use $PORT in cmd) and services stop with DSH. Open loads url, the port plus path.',
           parameters: {
             type: 'object',
             additionalProperties: false,
             properties: {
               action: {
                 type: 'string',
-                enum: ['list', 'register', 'start', 'stop', 'logs'],
+                enum: ['list', 'register', 'start', 'stop', 'remove', 'logs'],
               },
-              id: { type: 'string', description: 'Service id, for start/stop/logs.' },
+              id: { type: 'string', description: 'Service id, for start/stop/remove/logs.' },
               dir: { type: 'string', description: 'Absolute directory: served, or the command cwd.' },
               cmd: { type: 'string', description: 'Start command for a spawned service; use $PORT.' },
               path: { type: 'string', description: 'URL path Open loads, e.g. /app/index.html.' },
               name: { type: 'string', description: 'Panel label; defaults to the directory name.' },
               kind: { type: 'string', enum: ['spawned', 'static'] },
               start: { type: 'boolean', description: 'register: start it now (default true).' },
+              autoStart: { type: 'boolean', description: 'register: start it when DSH launches (default false).' },
             },
             required: ['action'],
           },
@@ -795,15 +943,19 @@ export function apply(ctx) {
               },
               required: ['services'],
             },
-            render: (_args, value) => {
+            render: (args, value) => {
               const rows = (value?.services ?? []).map((service) => {
                 const detail = service.kind === 'static' ? service.dir : service.cmd || ''
                 return `${service.status === 'running' ? '●' : '○'} ${service.name}  ${service.url}  ${detail}`
               })
-              return [{ type: 'text', text: rows.length > 0 ? rows.join('\n') : 'no services registered' }]
+              if (rows.length > 0) return [{ type: 'text', text: rows.join('\n') }]
+              // An empty list means two different things, and the agent has to be
+              // able to tell which one it just did.
+              return [{ type: 'text', text: args?.action === 'remove' ? `removed ${args.id}` : 'no services registered' }]
             },
           },
           async execute(args, exec) {
+            sync()
             const action = String(args?.action || 'list')
             if (action === 'list') {
               await refreshServeMap()
@@ -819,9 +971,14 @@ export function apply(ctx) {
                 entry: args.entry,
                 path: args.path,
                 sessionId: sessionIdOf(args, exec),
+                autoStart: args.autoStart,
               })
               if (args.start !== false) await start(entry.id)
               return { services: [view(entry)] }
+            }
+            if (action === 'remove') {
+              await remove(String(args.id))
+              return { services: [] }
             }
             if (action === 'start') {
               await start(String(args.id))
@@ -842,6 +999,10 @@ export function apply(ctx) {
       'localhost: serve tool',
     )
   }
+
+  // The registry was read at the top of `apply`; the entries that asked for it
+  // start now. If the subprocess seam is not mounted yet, the tick retries.
+  void boot()
 
   /** Prefer the calling session's directory; a tool call without one must say where. */
   async function resolveDir(args, exec) {

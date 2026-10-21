@@ -16,8 +16,8 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { createServer } from 'node:http'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer, get } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
@@ -45,6 +45,37 @@ JSON
   { mode: 0o755 },
 )
 process.env.TAILSCALE_BIN = FAKE_TAILSCALE
+
+/**
+ * The registry file the Host half owns. Several tests below edit it from the
+ * outside, because "an editor changed the file" is a supported situation now —
+ * it is the situation that produced 0.4.0.
+ */
+const REGISTRY = join(home, 'localhost', 'services.json')
+const readRegistry = () => JSON.parse(readFileSync(REGISTRY, 'utf8'))
+const writeRegistry = (services) => {
+  mkdirSync(dirname(REGISTRY), { recursive: true })
+  writeFileSync(REGISTRY, `${JSON.stringify({ version: 1, services }, null, 2)}\n`)
+}
+const snapshotRegistry = () => (existsSync(REGISTRY) ? readFileSync(REGISTRY, 'utf8') : null)
+const restoreRegistry = (text) => {
+  if (text === null) rmSync(REGISTRY, { force: true })
+  else writeFileSync(REGISTRY, text)
+}
+
+/** Let whatever the mount started finish; the boot pass is deliberately async. */
+const settle = () => new Promise((done) => setTimeout(done, 30))
+
+/** One request on its own connection, so a pooled keep-alive socket cannot answer it. */
+const connect = (port) =>
+  new Promise((resolveConnect, rejectConnect) => {
+    const request = get({ host: '127.0.0.1', port, path: '/', agent: false }, (response) => {
+      response.resume()
+      resolveConnect(response.statusCode)
+    })
+    request.on('error', rejectConnect)
+    request.setTimeout(1000, () => request.destroy(new Error('no answer in 1s')))
+  })
 
 const host = await import('../index.js')
 const CLIENT_SOURCE = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'client.js'), 'utf8')
@@ -441,7 +472,178 @@ describe('host: registry', () => {
     const created = (await create(harness, { kind: 'spawned', dir: home, cmd: 'sleep 1', start: false })).service
     await harness.call('remove', { method: 'POST', body: { id: created.id } })
     assert.equal((await listIds(harness)).includes(created.id), false)
+    assert.equal(readRegistry().services.some((service) => service.id === created.id), false, 'the file no longer has it')
     harness.dispose()
+  })
+
+  it('stops what the entry owned when it is removed', async () => {
+    const subprocess = makeSubprocess()
+    const harness = makeCtx({ subprocess })
+    host.apply(harness.ctx)
+    const created = (await create(harness, { kind: 'spawned', dir: home, cmd: 'serve', start: true })).service
+    await harness.call('remove', { method: 'POST', body: { id: created.id } })
+    assert.equal(subprocess.spawned[0].terminated, true, 'removing a running service terminates it')
+  })
+
+  it('removes through the tool, and says so in its own render', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const tool = harness.tools[0]
+    const created = (await create(harness, { kind: 'spawned', dir: home, cmd: 'tool-removed', start: false })).service
+    const value = await tool.execute({ action: 'remove', id: created.id }, {})
+    assert.deepEqual(value.services, [])
+    const blocks = tool.output.render({ action: 'remove', id: created.id }, value)
+    assert.equal(blocks[0].text, `removed ${created.id}`, 'an empty list after a remove names the removal, not an empty registry')
+  })
+})
+
+describe('host: the registry file is the truth', () => {
+  it('drops a row deleted on disk, and does not put it back on the next write', async () => {
+    // This is the whole reason 0.4.0 exists: an agent deleted its row with an
+    // editor, the panel kept showing it, and the next save wrote the ghost back.
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const doomed = (await create(harness, { kind: 'spawned', dir: home, cmd: 'doomed', start: false })).service
+    const kept = (await create(harness, { kind: 'spawned', dir: home, cmd: 'kept', start: false })).service
+
+    writeRegistry(readRegistry().services.filter((service) => service.id !== doomed.id))
+    assert.equal((await listIds(harness)).includes(doomed.id), false, 'the panel follows the file')
+
+    await create(harness, { kind: 'spawned', dir: home, cmd: 'another', start: false })
+    const file = readRegistry().services.map((service) => service.id)
+    assert.equal(file.includes(doomed.id), false, 'a later write does not resurrect the deleted row')
+    assert.ok(file.includes(kept.id), 'the other rows are untouched')
+  })
+
+  it('stops the server of a row deleted on disk', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-vanish-'))
+    writeFileSync(join(root, 'index.html'), '<!doctype html><p>here</p>')
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const created = (await create(harness, { kind: 'static', dir: root, start: true })).service
+    assert.equal((await fetch(`http://127.0.0.1:${created.port}/`)).status, 200)
+
+    writeRegistry(readRegistry().services.filter((service) => service.id !== created.id))
+    assert.equal((await listIds(harness)).includes(created.id), false)
+    await settle()
+    // A fresh connection, not `fetch`: the pool would hand back the keep-alive
+    // socket from the request above and hide whether the listener is still there.
+    await assert.rejects(connect(created.port), 'the port goes with the row')
+  })
+
+  it('picks up a row written from outside, as stopped', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-outside-'))
+    writeFileSync(join(root, 'index.html'), '<!doctype html><p>outside</p>')
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const services = [...readRegistry().services, { id: 'svc-outside', name: 'outside', kind: 'static', dir: root, cmd: '', entry: '', path: '', port: 8899, sessionId: '', createdAt: Date.now() }]
+    writeRegistry(services)
+
+    const listed = readJson(await harness.call('list')).services.find((service) => service.id === 'svc-outside')
+    assert.ok(listed, 'a row registered by hand is visible')
+    assert.equal(listed.status, 'stopped', 'and it does not claim to run')
+    assert.equal(listed.url, 'http://127.0.0.1:8899/')
+  })
+
+  it('keeps what it has when the file is half-written', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const created = (await create(harness, { kind: 'spawned', dir: home, cmd: 'survives', start: false })).service
+    const before = readRegistry().services
+    writeFileSync(REGISTRY, '{ "version": 1, "services": [')
+    assert.equal((await listIds(harness)).includes(created.id), true, 'a broken read does not drop the rows')
+    writeRegistry(before.filter((service) => service.id !== created.id))
+  })
+})
+
+describe('host: autoStart', () => {
+  it('starts exactly the entries marked autoStart, after the composition is up', async () => {
+    const snapshot = snapshotRegistry()
+    try {
+      const first = makeCtx({ subprocess: makeSubprocess() })
+      host.apply(first.ctx)
+      const marked = (await create(first, { kind: 'spawned', name: 'marked', dir: home, cmd: 'wanted', start: false, autoStart: true })).service
+      await create(first, { kind: 'spawned', name: 'plain', dir: home, cmd: 'unwanted', start: false })
+      first.dispose()
+
+      const subprocess = makeSubprocess()
+      const second = makeCtx({ subprocess })
+      host.apply(second.ctx)
+      await settle()
+      assert.deepEqual(subprocess.spawned.map((record) => record.spec.argv[2]), ['wanted'], 'only the marked row starts')
+      const listed = readJson(await second.call('list')).services.find((service) => service.id === marked.id)
+      assert.equal(listed.status, 'starting', 'the row says what it is doing instead of looking stopped')
+      second.dispose()
+    } finally {
+      restoreRegistry(snapshot)
+    }
+  })
+
+  it('leaves a failure on the row instead of throwing it at the composition', async () => {
+    const snapshot = snapshotRegistry()
+    const root = mkdtempSync(join(tmpdir(), 'dsh-gone-'))
+    try {
+      const first = makeCtx({ subprocess: makeSubprocess() })
+      host.apply(first.ctx)
+      const created = (await create(first, { kind: 'static', name: 'gone', dir: root, start: false, autoStart: true })).service
+      first.dispose()
+      rmSync(root, { recursive: true, force: true })
+
+      const second = makeCtx({ subprocess: makeSubprocess() })
+      assert.doesNotThrow(() => host.apply(second.ctx), 'a service that cannot start is not a boot failure')
+      await settle()
+      const listed = readJson(await second.call('list')).services.find((service) => service.id === created.id)
+      assert.equal(listed.status, 'exited')
+      assert.match(listed.error, /does not exist/, 'the row names the reason')
+      second.dispose()
+    } finally {
+      restoreRegistry(snapshot)
+    }
+  })
+
+  it('waits for the subprocess seam instead of claiming a start it cannot make', async () => {
+    const snapshot = snapshotRegistry()
+    try {
+      const first = makeCtx({ subprocess: makeSubprocess() })
+      host.apply(first.ctx)
+      const created = (await create(first, { kind: 'spawned', name: 'seamless', dir: home, cmd: 'needs-seam', start: false, autoStart: true })).service
+      first.dispose()
+
+      // A composition without `subprocess`: the pass must not run, and must not fail.
+      const second = makeCtx({})
+      assert.doesNotThrow(() => host.apply(second.ctx))
+      await settle()
+      const listed = readJson(await second.call('list')).services.find((service) => service.id === created.id)
+      assert.equal(listed.status, 'stopped', 'nothing claims to run without a seam')
+      second.dispose()
+    } finally {
+      restoreRegistry(snapshot)
+    }
+  })
+
+  it('turns the opt-in on and off through the route, and the file remembers', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const created = (await create(harness, { kind: 'spawned', dir: home, cmd: 'toggle', start: false })).service
+    assert.equal(created.autoStart, false, 'the default is off')
+
+    const on = readJson(await harness.call('autostart', { method: 'POST', body: { id: created.id, autoStart: true } })).service
+    assert.equal(on.autoStart, true)
+    assert.equal(readRegistry().services.find((service) => service.id === created.id).autoStart, true)
+
+    const off = readJson(await harness.call('autostart', { method: 'POST', body: { id: created.id, autoStart: false } })).service
+    assert.equal(off.autoStart, false)
+    await harness.call('remove', { method: 'POST', body: { id: created.id } })
+  })
+
+  it('keeps the opt-in when a re-register does not mention it', async () => {
+    const harness = makeCtx({ subprocess: makeSubprocess() })
+    host.apply(harness.ctx)
+    const first = (await create(harness, { kind: 'spawned', dir: home, cmd: 'optin', start: false, autoStart: true })).service
+    const again = (await create(harness, { kind: 'spawned', dir: home, cmd: 'optin', start: false, path: '/x' })).service
+    assert.equal(again.id, first.id)
+    assert.equal(again.autoStart, true, 'an update that says nothing about the opt-in does not clear it')
+    await harness.call('remove', { method: 'POST', body: { id: first.id } })
   })
 })
 
@@ -525,7 +727,11 @@ describe('host: tool budget', () => {
   // This tool sits in every agent's list on every request, so its size is a
   // budget, not an accident: 0.1.x shipped 1668 chars and 0.2.0 trims to under
   // 1000. Raising this number is a decision, not a side effect of editing prose.
-  const BUDGET_CHARS = 1000
+  // 0.4.0 spends 73 more characters: `remove` in the enum and the `autoStart`
+  // flag are the two things the panel does that the agent could not do at all,
+  // and paying for them here is cheaper than the hand-edited registry that
+  // `docs/plan.md` §17 describes.
+  const BUDGET_CHARS = 1100
 
   it('keeps the model-facing payload inside the budget', async () => {
     const harness = makeCtx({ subprocess: makeSubprocess() })
@@ -543,7 +749,7 @@ describe('host: tool budget', () => {
     const harness = makeCtx({ subprocess: makeSubprocess() })
     host.apply(harness.ctx)
     const parameters = harness.tools[0].parameters
-    assert.deepEqual(Object.keys(parameters.properties).sort(), ['action', 'cmd', 'dir', 'id', 'kind', 'name', 'path', 'start'])
+    assert.deepEqual(Object.keys(parameters.properties).sort(), ['action', 'autoStart', 'cmd', 'dir', 'id', 'kind', 'name', 'path', 'start'])
     assert.equal(parameters.properties.kind.description, undefined, 'the enum already says spawned | static')
     harness.dispose()
   })
@@ -1014,6 +1220,52 @@ describe('client: panel', () => {
     assert.ok(link, 'the expanded tile offers the session jump')
     link.props.onClick()
     assert.deepEqual(openedSessions, ['session-abcdef12-3456'], 'the jump reaches uiWorkspace with the session id')
+  })
+
+  it('shows the auto-start opt-in as pressed when the row has it', async () => {
+    const { tree } = await mountPanel([
+      { id: 'svc-a', name: 'dev', kind: 'spawned', dir: '/tmp/a', cmd: 'serve', port: 8848, status: 'running', url: 'http://127.0.0.1:8848/', autoStart: true, sessionId: '' },
+    ])
+    const pill = findButton(tree, '● 自动启动')
+    assert.ok(pill, 'a marked service says so on the tile')
+    assert.equal(pill.props['aria-pressed'], 'true')
+  })
+
+  it('posts the flipped opt-in when the auto-start pill is pressed', async () => {
+    const calls = []
+    const { tree } = await mountPanel(
+      [{ id: 'svc-b', name: 'dev', kind: 'spawned', dir: '/tmp/b', cmd: 'serve', port: 8849, status: 'stopped', url: 'http://127.0.0.1:8849/', autoStart: false, sessionId: '' }],
+      (url, init) => calls.push({ url, init }),
+    )
+    const pill = findButton(tree, '○ 自动启动')
+    assert.ok(pill, 'an unmarked service offers the switch')
+    await pill.props.onClick()
+    const call = calls.find((entry) => entry.url === '/api/localhost.autostart')
+    assert.ok(call, 'the switch posts to /api/localhost.autostart')
+    assert.deepEqual(JSON.parse(call.init.body), { id: 'svc-b', autoStart: true })
+  })
+
+  it('asks once before removing, and removes on the second click', async () => {
+    const calls = []
+    const { tree, render } = await mountPanel(
+      [{ id: 'svc-c', name: 'bye', kind: 'spawned', dir: '/tmp/c', cmd: 'serve', port: 8850, status: 'stopped', url: 'http://127.0.0.1:8850/', autoStart: false, sessionId: '' }],
+      (url, init) => calls.push({ url, init }),
+    )
+    findButton(tree, '▼').props.onClick()
+    const ask = findButton(render(), '移除')
+    assert.ok(ask, 'the expanded tile offers Remove')
+    await ask.props.onClick()
+    assert.equal(
+      calls.some((entry) => entry.url === '/api/localhost.remove'),
+      false,
+      'the first click only asks',
+    )
+    const confirm = findButton(render(), '确认移除')
+    assert.ok(confirm, 'the same place now asks for confirmation')
+    await confirm.props.onClick()
+    const call = calls.find((entry) => entry.url === '/api/localhost.remove')
+    assert.ok(call, 'the second click removes')
+    assert.equal(JSON.parse(call.init.body).id, 'svc-c')
   })
 
   it('expands a row into the directory, the entry file and the registering session', async () => {
